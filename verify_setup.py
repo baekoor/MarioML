@@ -14,7 +14,7 @@ else:
     print("CUDA is NOT available - check your PyTorch installation")
 
 try:
-    env = gym_super_mario_bros.make('SuperMarioBros-1-1-v2')
+    env = gym_super_mario_bros.make('SuperMarioBros-1-1-v0')
     print("Mario environment created successfully")
     env.close()
 except Exception as e:

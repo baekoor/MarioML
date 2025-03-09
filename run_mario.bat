@@ -12,12 +12,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Finding latest checkpoint...
-python -c "from run_mario_agent import find_latest_checkpoint; checkpoint = find_latest_checkpoint(); print(str(checkpoint) if checkpoint else 'None')" > temp_checkpoint.txt
-set /p CHECKPOINT=<temp_checkpoint.txt
-del temp_checkpoint.txt
+REM Find latest checkpoint directory
+for /f "tokens=*" %%a in ('dir /b /od /ad .\mario_checkpoints') do set LATEST_DIR=%%a
 
-if "%CHECKPOINT%"=="None" (
+REM Find latest checkpoint file in that directory
+for /f "tokens=*" %%a in ('dir /b /od .\mario_checkpoints\%LATEST_DIR%\mario_model_step_*.pt') do set CHECKPOINT=.\mario_checkpoints\%LATEST_DIR%\%%a
+
+if "%CHECKPOINT%"=="" (
     echo No checkpoints found.
     exit /b 1
 )
@@ -26,7 +27,7 @@ echo Latest checkpoint: %CHECKPOINT%
 echo Running agent with latest checkpoint...
 
 REM Run the agent with the found checkpoint
-python run_mario_agent.py --checkpoint "%CHECKPOINT%" --episodes 10
+python run_mario_agent.py --checkpoint "%CHECKPOINT%" --episodes 5
 
 echo Demo complete!
 pause

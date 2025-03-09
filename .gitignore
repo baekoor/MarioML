@@ -30,4 +30,8 @@ share/python-wheels/
 *.manifest
 *.spec
 
-# Installer
+# Venv
+.venv
+
+# Checkpoints
+mario_checkpoints/*
