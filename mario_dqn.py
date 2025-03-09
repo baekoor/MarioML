@@ -34,6 +34,33 @@ state_tensor = torch.zeros((4, 84, 84), device=device, dtype=torch.uint8)
 next_state_tensor = torch.zeros((4, 84, 84), device=device, dtype=torch.uint8)
 
 
+def safe_step(env, action, max_retry=3):
+    """Safely perform a step in the environment with error handling."""
+    for attempt in range(max_retry):
+        try:
+            return env.step(action)
+        except (OSError, RuntimeError) as e:
+            if attempt < max_retry - 1:
+                print(
+                    f"Environment step error: {e}, retrying ({attempt+1}/{max_retry})...")
+                time.sleep(0.1)  # Small delay before retry
+                continue
+            else:
+                # If we've exhausted retries, reset the environment
+                print(
+                    f"Environment step failed after {max_retry} attempts. Resetting...")
+                try:
+                    state = env.reset()
+                    # Return a safe default
+                    return state, 0.0, True, {"x_pos": 0, "flag_get": False}
+                except Exception as reset_error:
+                    print(f"Environment reset also failed: {reset_error}")
+                    # Create a minimal valid state if everything fails
+                    dummy_state = np.zeros((4, 84, 84, 1), dtype=np.uint8)
+                    dummy_info = {"x_pos": 0, "flag_get": False}
+                    return dummy_state, 0.0, True, dummy_info
+
+
 def cuda_error_handling(func):
     """Decorator to handle CUDA errors gracefully"""
     def wrapper(*args, **kwargs):
@@ -136,7 +163,7 @@ if torch.cuda.is_available():
 
     # Initialize other performance optimizations
     # Increase batch size if sufficient memory is available
-    INCREASED_BATCH_SIZE = 32
+    INCREASED_BATCH_SIZE = 64
     print(f"Using increased batch size: {INCREASED_BATCH_SIZE}")
 
 
@@ -288,7 +315,7 @@ class MarioAgent:
                  lr=1e-4, memory_size=100000, batch_size=64,  # Increased batch size
                  gamma=0.99, exploration_max=1.0, exploration_min=0.05,
                  exploration_decay=0.9999):
-
+        self.breakthrough_memory = []  # Store special experiences
         self.device = device
         self.action_count = action_count
         self.save_dir = save_dir
@@ -462,8 +489,35 @@ class MarioAgent:
         else:
             self.exploration_rate = self.exploration_min
 
+        # Special exploration handling for the 594 barrier
+        # If we have access to position info
+        # This assumes you pass x_pos to the agent somehow, possibly through the state
+        # You might need to adapt this based on your exact implementation
+        boost_exploration = False
+        x_pos = 0
+
+        # Try to extract position from state
+        # This is a simplistic check - you might need to implement this differently
+        # based on how your state representation works
+        if hasattr(state, 'info') and hasattr(state.info, 'x_pos'):
+            x_pos = state.info.x_pos
+            if 590 <= x_pos <= 600:
+                boost_exploration = True
+            if 720 <= x_pos <= 730:
+                boost_exploration = True
+            if 890 <= x_pos <= 900:
+                boost_exploration = True
+
+        # If we are at the barrier, boost exploration temporarily
+        effective_exploration_rate = self.exploration_rate
+        if boost_exploration:
+            effective_exploration_rate = min(
+                0.5, self.exploration_rate * 2)  # Double exploration rate up to 50%
+        else:
+            effective_exploration_rate = self.exploration_rate
+
         # Epsilon-greedy action selection
-        if random.random() < self.exploration_rate:
+        if random.random() < effective_exploration_rate:
             # Random action
             action = random.randrange(self.action_count)
         else:
@@ -530,6 +584,23 @@ class MarioAgent:
                 priority_boost = 20.0  # Use direct assignment instead of multiplication
                 print("MAXIMUM PRIORITY: Level completed!")
 
+        if info is not None:
+            x_pos = info.get('x_pos', 0)
+            # Calculate progress here
+            x_progress = x_pos - getattr(self, 'last_x_pos', x_pos-1)
+
+            # Store ONLY SUCCESSFUL breakthroughs - when there's positive progress
+            if (((590 <= x_pos <= 610 and x_pos > 595 and x_progress > 0) or  # Only past 595 for the first barrier
+                (720 <= x_pos <= 740 and x_pos > 722 and x_progress > 0) or
+                    (895 <= x_pos <= 910 and x_pos > 898 and x_progress > 0))):
+                self.breakthrough_memory.append(
+                    (state, next_state, action, reward*2, done))
+                print(f"Stored TRUE breakthrough at position {x_pos}!")
+
+                # Limit size of breakthrough memory
+                if len(self.breakthrough_memory) > 1000:  # Cap at 1000 experiences
+                    self.breakthrough_memory.pop(0)  # Remove oldest
+
         # Apply the boost with a safety cap to prevent overflow
         try:
             # Cap the maximum priority
@@ -545,13 +616,20 @@ class MarioAgent:
         self.memory_counter += 1
 
     def recall(self):
-        """Sample batch from memory with priority sampling"""
+        """Sample batch from memory with priority sampling and occasional breakthrough examples"""
         # Get number of experiences in memory
         n_experiences = min(self.memory_counter, self.memory_size)
 
-        if n_experiences < self.batch_size:
+        # Determine how many samples to take from regular memory vs breakthrough memory
+        # Up to 20% from breakthroughs
+        n_breakthrough = min(len(self.breakthrough_memory),
+                             self.batch_size // 5)
+        n_regular = self.batch_size - n_breakthrough
+
+        # Sample from regular memory
+        if n_experiences < n_regular:
             # Not enough experiences, sample with replacement
-            indices = torch.randint(0, n_experiences, (self.batch_size,))
+            indices = torch.randint(0, n_experiences, (n_regular,))
         else:
             # Use prioritized sampling
             priorities = self.priorities[:n_experiences]
@@ -562,9 +640,9 @@ class MarioAgent:
 
             # Sample based on priorities
             indices = torch.multinomial(
-                probs.flatten(), self.batch_size, replacement=True)
+                probs.flatten(), n_regular, replacement=True)
 
-        # Get batch of experiences
+        # Get batch of experiences from regular memory
         state_batch = self.state_memory[indices].to(self.device).float()
         next_state_batch = self.next_state_memory[indices].to(
             self.device).float()
@@ -572,7 +650,36 @@ class MarioAgent:
         reward_batch = self.reward_memory[indices].to(self.device)
         done_batch = self.done_memory[indices].to(self.device).float()
 
-        # Save indices for priority updates
+        # If we have breakthrough examples, include them
+        if n_breakthrough > 0:
+            # Randomly sample from breakthrough memory
+            breakthrough_indices = torch.randint(
+                0, len(self.breakthrough_memory), (n_breakthrough,))
+
+            # Convert breakthrough experiences to tensors
+            for i, idx in enumerate(breakthrough_indices):
+                # Get the experience
+                bt_state, bt_next_state, bt_action, bt_reward, bt_done = self.breakthrough_memory[
+                    idx]
+
+                # Convert states to tensors
+                bt_state_tensor = self._lazy_frames_to_tensor(
+                    bt_state).unsqueeze(0)
+                bt_next_state_tensor = self._lazy_frames_to_tensor(
+                    bt_next_state).unsqueeze(0)
+
+                # Append to the batch
+                append_idx = n_regular + i
+                # The key issue: make sure append_idx is in bounds
+                # Check using size(0) instead of self.batch_size
+                if append_idx < state_batch.size(0):
+                    state_batch[append_idx] = bt_state_tensor.float()
+                    next_state_batch[append_idx] = bt_next_state_tensor.float()
+                    action_batch[append_idx, 0] = bt_action
+                    reward_batch[append_idx, 0] = bt_reward
+                    done_batch[append_idx, 0] = float(bt_done)
+
+        # Save indices for priority updates (only for regular memory)
         self.batch_indices = indices
 
         return state_batch, next_state_batch, action_batch, reward_batch, done_batch
@@ -585,11 +692,26 @@ class MarioAgent:
             return None
 
         # Learn only every few steps for efficiency
-        if self.curr_step % 4 != 0:
+        if self.curr_step % 2 != 0:
             return None
 
         # Sample batch from memory
         state_batch, next_state_batch, action_batch, reward_batch, done_batch = self.recall()
+
+        # Now check for barrier indices correctly - use tensor operations
+        barrier_lr_adjustment = False
+
+        # Check if any indices are in the critical barrier regions
+        barrier_indices_720 = ((self.batch_indices >= 700) & (
+            self.batch_indices <= 730)).any().item()
+        barrier_indices_890 = ((self.batch_indices >= 890) & (
+            self.batch_indices <= 910)).any().item()
+
+        if barrier_indices_720 or barrier_indices_890:
+            # Reduce learning rate temporarily when training on barrier experiences
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.optimizer.param_groups[0]['lr'] = current_lr * 0.5
+            barrier_lr_adjustment = True
 
         # Enable mixed precision for faster computation
         if hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
@@ -627,7 +749,6 @@ class MarioAgent:
             loss = F.smooth_l1_loss(current_q_values, target_q_values)
 
         # Optimize the model with gradient scaling for mixed precision
-        # More efficient than zero_grad()
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
 
@@ -637,6 +758,11 @@ class MarioAgent:
 
         # Step optimizer
         self.optimizer.step()
+
+        # Restore learning rate if it was temporarily adjusted
+        if barrier_lr_adjustment:
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.optimizer.param_groups[0]['lr'] = current_lr * 2.0
 
         # Update target network periodically - soft update for better stability
         self.learn_step_counter += 1
@@ -736,6 +862,11 @@ class EnhancedMarioEnv:
         self.last_time = 400
         self.stuck_counter = 0
         self.max_stuck_steps = 50
+        self.last_y_pos = 0
+        self.jump_count = 0
+        self.jump_heights = []
+        self.stuck_at_594_count = 0  # Track attempts at the barrier
+        self.last_actions = []
 
         # For tracking progress
         self.coin_count = 0
@@ -765,6 +896,13 @@ class EnhancedMarioEnv:
         self.episode_step_count = 0
         self.total_reward = 0
         self.passed_checkpoints = set()
+        self.last_actions = []  # Reset action history
+
+        # Reset jump tracking
+        self.last_y_pos = 79  # Default ground level
+        self.jump_count = 0
+        self.jump_heights = []
+        self.stuck_at_594_count = 0
 
         return state
 
@@ -778,6 +916,7 @@ class EnhancedMarioEnv:
 
         # Extract info
         x_pos = info.get('x_pos', 0)
+        y_pos = info.get('y_pos', 0)  # Track vertical position
         time_left = info.get('time', 0)
         score = info.get('score', 0)
         coins = info.get('coins', 0)
@@ -794,11 +933,75 @@ class EnhancedMarioEnv:
             self.max_x_pos = x_pos
             self.stuck_counter = 0
 
-        # Add a special bonus for breaking past the 594 barrier
-        if x_pos > 600 and self.max_x_pos < 600:
-            shaped_reward += 15.0  # Significant bonus for breaking through
+        self.last_actions.append(action)
+        if len(self.last_actions) > 5:
+            self.last_actions.pop(0)
+
+        # SPECIFIC HANDLING FOR THE 594 BARRIER
+        # If we're near the barrier, provide special incentives
+        if 590 <= x_pos <= 605:
+            # We're in the barrier region
+
+            # Track if we're stuck at the barrier
+            if 593 <= x_pos <= 595:
+                self.stuck_at_594_count += 1
+            else:
+                self.stuck_at_594_count = 0
+
+            # Jump detection and reward
+            y_change = y_pos - self.last_y_pos
+
+            # Reward for jumping/being airborne in the barrier region
+            if y_pos < 79:  # If Mario is above ground level
+                # The lower the y_pos, the higher Mario is (screen coordinates)
+                jump_height = max(0, 79 - y_pos)
+
+                # Exponential reward for jump height in barrier region
+                jump_reward = 0.1 * (jump_height ** 1.5)
+                shaped_reward += jump_reward
+
+                # Extra reward for jumping actions specifically
+                if action in [2, 3, 4, 5]:  # Jump actions in SIMPLE_MOVEMENT
+                    shaped_reward += 0.2
+
+                print(
+                    f"Jump reward at position {x_pos}: +{jump_reward:.2f}, height: {jump_height}")
+
+            # If stuck for too long at 594, add exploration boost
+            if self.stuck_at_594_count > 20:
+                # Encourage trying different actions
+                # Reward actions different from the common ones
+                shaped_reward += 0.5 * (1 - abs(action - 3) / 6)
+
+                # Every 50 stuck steps, add a random reward to break patterns
+                if self.stuck_at_594_count % 50 == 0:
+                    import random
+                    shaped_reward += random.uniform(0.5, 2.0)
+                    print(
+                        f"Adding randomized reward to break 594 barrier: +{shaped_reward:.2f}")
+
+            if len(self.last_actions) >= 3:
+                if self.last_actions[-1] in [2, 3, 4] and self.last_actions[-2] == 1 and self.last_actions[-3] == 1:
+                    # Running (action 1) then jumping (action 2,3,4)
+                    shaped_reward += 2.0
+                    print("Sequence reward: run->jump pattern")
+
+        # Even bigger breakthrough bonus for passing the barrier
+        if x_pos > 600 and self.max_x_pos <= 600:
+            shaped_reward += 25.0  # Increased from 15.0
             print(
                 f"BREAKTHROUGH! Agent passed the 594 barrier! New position: {x_pos}")
+
+        if 720 <= x_pos <= 730:
+            # We're at the 722 barrier
+            # Similar rewards for jumping in this region
+            if y_pos < 79:  # If Mario is above ground level
+                jump_height = max(0, 79 - y_pos)
+                # Stronger reward curve
+                jump_reward = 0.15 * (jump_height ** 1.8)
+                shaped_reward += jump_reward
+                print(
+                    f"722 barrier jump reward: +{jump_reward:.2f}, height: {jump_height}")
 
         if x_progress > 0:
             # Reward for moving right
@@ -851,6 +1054,7 @@ class EnhancedMarioEnv:
 
         # Update tracking variables
         self.last_x_pos = x_pos
+        self.last_y_pos = y_pos  # Track vertical position
         self.last_time = time_left
         self.last_score = score
         self.total_reward += shaped_reward
@@ -1072,15 +1276,6 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
         for episode in range(num_episodes):
             last_checkpoint_path = None
 
-            if episode % 5 == 0:
-                checkpoint_path = save_dir / \
-                    f"mario_model_step_{agent.curr_step}_ep_{episode}.pt"
-                agent.save(episode)
-                last_checkpoint_path = checkpoint_path
-
-                with open(save_dir / "last_successful_checkpoint.txt", "w") as f:
-                    f.write(str(checkpoint_path))
-
             # Track episode start time
             start_time = time.time()
 
@@ -1113,7 +1308,7 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
                 action = agent.act(state)
 
                 # Take action
-                next_state, reward, done, info = wrapped_env.step(action)
+                next_state, reward, done, info = safe_step(wrapped_env, action)
 
                 # Important: Store this experience with info for priority boosting
                 agent.cache(state, next_state, action, reward, done, info)
@@ -1128,7 +1323,7 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
 
                 # Continue processing only if not done
                 # Process learning only every 4 steps for efficiency
-                if agent.curr_step % 4 == 0:
+                if agent.curr_step % 2 == 0:
                     # Render if enabled - reduced frequency
                     if render and episode % 10 == 0 and agent.curr_step % 20 == 0:
                         wrapped_env.render()
@@ -1456,7 +1651,7 @@ if __name__ == "__main__":
     train(
         num_episodes=args.episodes,
         render=not args.no_render,
-        save_every=args.save_every,
+        save_every=50,
         checkpoint_path=args.checkpoint,
         action_type=args.action_type,
         eval_interval=args.eval_interval,
