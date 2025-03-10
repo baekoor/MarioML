@@ -70,3 +70,29 @@ Batch Size Adjustment: Modify INCREASED_BATCH_SIZE variable for your GPU
 CUDA Memory Management: Clear cache periodically if experiencing memory issues
 Rendering: Disable rendering for 2-3x faster training
 CPU Priority: The script automatically sets process priority to high
+
+## Model Breeding System
+
+The agent incorporates an evolutionary approach to accelerate learning at challenging obstacles:
+
+### How Breeding Works
+
+1. **Success Memory**: When an agent successfully crosses a difficult barrier (e.g., position 594, 722, or 898), its neural network weights are saved to a model library
+
+2. **Model Combination**: Every 20 episodes, the system attempts to breed a new model by combining weights from successful models:
+
+   - Selects parent models that crossed specific barriers
+   - Performs weighted averaging of neural network parameters (50% from the best performer, 30% from second-best, 20% from third-best)
+   - Focuses particularly on the critical barrier at position 898 (the final pipe)
+
+3. **Specialized Training**: Bred models undergo focused training with:
+
+   - Enhanced rewards near barrier 898
+   - Modified exploration rates in challenging areas
+   - Accelerated learning from successful examples
+
+4. **Knowledge Transfer**: If a bred model successfully crosses barrier 898, its weights are adopted by the main agent
+
+5. **Continuous Improvement**: This cycle creates a positive feedback loop where successful strategies are preserved and enhanced
+
+This approach significantly improves learning efficiency by preserving and combining successful strategies across multiple agents, particularly for the most challenging obstacles in the level.

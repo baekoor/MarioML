@@ -335,6 +335,7 @@ class MarioAgent:
             "722": deque(maxlen=1000),  # For the second barrier
             "898": deque(maxlen=750),  # For the third barrier
             "1125": deque(maxlen=1000),  # For the hole around position 1125
+            "1500": deque(maxlen=1000),  # For progress past position 1500
             "completion": deque(maxlen=500)  # For level completions
         }
 
@@ -454,18 +455,24 @@ class MarioAgent:
             near_barrier = True
 
             if x_pos < 898:
-                # Higher exploration when approaching to find the right action sequence
+                # Higher exploration when approaching
                 boost_factor = 3.5  # Increased from 2.0
                 proximity_boost = max(0, 1.0 - abs(898 - x_pos) / 15)
-                boost_factor += proximity_boost * 3.0  # Increased from 1.0
+                boost_factor += proximity_boost * 3.0
 
-                # Extra boost factor based on proximity to encourage experimentation
+                # Extra boost factor based on proximity
                 if 890 <= x_pos <= 897:
-                    # Very close to the pipe - try varied approaches
                     boost_factor += 1.0
             else:
-                # Immediately reduce exploration after crossing to exploit successful strategy
-                boost_factor = 1.0  # Even lower to strongly exploit working strategies
+                # Modified to maintain moderate exploration right after crossing
+                # Gradually reduce exploration as we move away from the pipe
+                post_pipe_distance = x_pos - 898
+                if post_pipe_distance < 20:
+                    # Maintain moderate exploration for 20 units after crossing
+                    boost_factor = 1.5 - (post_pipe_distance / 20 * 0.5)
+                else:
+                    # Revert to normal after 20 units
+                    boost_factor = 1.0
 
         if near_barrier:
             # Calculate boosted rate with a higher cap for 898
@@ -619,13 +626,13 @@ class MarioAgent:
             # Adaptive reset based on episode number
             if episode_num < 100:
                 # Higher reset in early episodes
-                new_rate = min(0.48, self.exploration_rate * 2.5)
+                new_rate = min(0.55, self.exploration_rate * 2.5)
             elif episode_num < 300:
                 # Moderate reset in middle episodes
-                new_rate = min(0.35, self.exploration_rate * 2.0)
+                new_rate = min(0.4, self.exploration_rate * 2.0)
             else:  # episode_num >= 300
                 # Less aggressive reset for very late episodes
-                new_rate = min(0.18, self.exploration_rate * 1.5)
+                new_rate = min(0.22, self.exploration_rate * 1.5)
 
             self.exploration_rate = new_rate
             print(
@@ -843,14 +850,10 @@ class MarioAgent:
                 # First barrier: 594
                 if prev_pos < 594 and current_pos > 595 and progress > 0:
                     barrier_crossed = "594"
-                    print(
-                        f"SUCCESS: Crossed barrier at 595! Position: {current_pos}")
 
                 # Second barrier: 722
                 elif prev_pos < 722 and current_pos > 722 and progress > 0:
                     barrier_crossed = "722"
-                    print(
-                        f"SUCCESS: Crossed barrier at 722! Position: {current_pos}")
 
                 # Third barrier: 898
                 elif prev_pos < 898 and current_pos > 900 and progress > 2.0:  # More strict requirements
@@ -876,6 +879,15 @@ class MarioAgent:
                         print(
                             f"POTENTIAL FALLING DETECTED: Position {current_pos} with Y-pos: {y_pos}")
 
+                elif prev_pos < 1495 and current_pos > 1505 and progress > 0:
+                    y_pos = info.get('y_pos', 0)
+                    # Check for valid position
+                    if y_pos < 79 and y_pos > 20:  # More flexible y-range
+                        barrier_crossed = "1500"
+                        print(
+                            f"MAJOR PROGRESS: Crossed position 1500! Position: {current_pos}, Y-pos: {y_pos}")
+                        priority_boost = 15.0  # Higher than regular barriers
+
                 # Store successful crossing in success memory
                 if barrier_crossed is not None:
                     # Store multiple steps leading to the crossing (last 5 steps)
@@ -895,6 +907,13 @@ class MarioAgent:
                             )
                             self.success_memory[barrier_crossed].append(
                                 success_exp)
+                        if barrier_crossed in ["594", "722", "898"]:
+                            # Create a tracker for post-barrier actions
+                            self.post_barrier_tracking = {
+                                "barrier": barrier_crossed,
+                                "start_pos": current_pos,
+                                "steps_remaining": 10
+                            }
 
                     # Higher priority for these experiences
                     priority_boost = 10.0
@@ -917,6 +936,32 @@ class MarioAgent:
 
                 priority_boost = 20.0
                 print("MAXIMUM PRIORITY: Level completed! Added to success memory.")
+
+        if hasattr(self, 'post_barrier_tracking') and self.post_barrier_tracking and self.post_barrier_tracking["steps_remaining"] > 0:
+            barrier = self.post_barrier_tracking["barrier"]
+            start_pos = self.post_barrier_tracking["start_pos"]
+
+            # Check if we're making forward progress
+            if x_pos > start_pos + 2:  # Only reward actual forward progress
+                # More valuable memory for post-barrier progress
+                mem_idx = (self.memory_counter - 1) % self.memory_size
+                if mem_idx >= 0:
+                    # Create a tuple with experience info
+                    post_barrier_exp = (
+                        self.state_memory[mem_idx].clone(),
+                        self.next_state_memory[mem_idx].clone(),
+                        self.action_memory[mem_idx].item(),
+                        # Higher reward for post-barrier progress
+                        self.reward_memory[mem_idx].item() * 2.5,
+                        self.done_memory[mem_idx].item()
+                    )
+                    self.success_memory[barrier].append(post_barrier_exp)
+                    print(f"Stored post-{barrier} progress: position {x_pos}")
+
+            # Update tracking
+            self.post_barrier_tracking["steps_remaining"] -= 1
+            if self.post_barrier_tracking["steps_remaining"] <= 0:
+                self.post_barrier_tracking = None
 
         # Apply the priority boost with safety cap
         self.priorities[index] = min(max_priority * priority_boost, 1000.0)
@@ -1235,6 +1280,70 @@ class MarioAgent:
                 selected_indices = random.sample(
                     range(len(self.success_memory["1125"])), batch_size)
 
+        if self.learn_step_counter % 12 == 0:  # More frequent reinforcement for 1500+
+            if "1500" in self.success_memory and len(self.success_memory["1500"]) > 0:
+                print(
+                    f"Reinforcing learning from {len(self.success_memory['1500'])} examples beyond position 1500")
+
+                # Take examples from the 1500+ memory
+                batch_size = min(32, len(self.success_memory["1500"]))
+                selected_indices = random.sample(
+                    range(len(self.success_memory["1500"])), batch_size)
+
+                # Create batch tensors
+                state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                          device=self.device, dtype=torch.float32)
+                next_state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                               device=self.device, dtype=torch.float32)
+                action_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.long)
+                reward_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+                done_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+
+                # Fill batch tensors
+                for i, idx in enumerate(selected_indices):
+                    s_state, s_next_state, s_action, s_reward, s_done = self.success_memory[
+                        "1500"][idx]
+                    state_batch[i] = s_state.to(self.device)
+                    next_state_batch[i] = s_next_state.to(self.device)
+                    action_batch[i, 0] = s_action
+                    # Very high reward multiplier for 1500+ examples
+                    reward_batch[i, 0] = s_reward * 3.0
+                    done_batch[i, 0] = float(s_done)
+
+                # Learn from this special 1500+ batch
+                with torch.cuda.amp.autocast():
+                    # Super boosted learning rate
+                    original_lr = self.optimizer.param_groups[0]['lr']
+                    self.optimizer.param_groups[0]['lr'] = original_lr * 6.0
+
+                    # Compute current Q values and process as usual...
+                    current_q_values = self.policy_net(
+                        state_batch).gather(1, action_batch)
+
+                    with torch.no_grad():
+                        next_actions = self.policy_net(next_state_batch).max(1)[
+                            1].unsqueeze(1)
+                        next_q_values = self.target_net(
+                            next_state_batch).gather(1, next_actions)
+                        target_q_values = reward_batch + \
+                            (1 - done_batch) * self.gamma * next_q_values
+
+                    # Use a stronger weight for 1500+ examples
+                    loss = F.smooth_l1_loss(current_q_values, target_q_values)
+
+                    # Optimize
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy_net.parameters(), max_norm=10.0)
+                    self.optimizer.step()
+
+                    # Restore original learning rate
+                    self.optimizer.param_groups[0]['lr'] = original_lr
+
         # Full update less frequently
         if self.learn_step_counter % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -1313,6 +1422,98 @@ class MarioAgent:
         print(
             f"Resuming from step {self.curr_step} with exploration rate {self.exploration_rate:.4f}")
 
+
+def breed_models(parent_models, weights=[0.6, 0.4]):
+    """Combine parameters from multiple successful models with different weights."""
+    # Create a new model with the same architecture
+    child_model = DuelingDQN(
+        input_channels=4, action_count=action_count).to(device)
+    child_dict = child_model.state_dict()
+
+    # Weighted combination of parameters
+    for key in child_dict:
+        # Initialize with zeros of the right shape
+        child_dict[key] = torch.zeros_like(parent_models[0].state_dict()[key])
+
+        # Add weighted parameters from each parent
+        for i, parent_model in enumerate(parent_models):
+            if i < len(weights):  # Only use weights that are specified
+                child_dict[key] += weights[i] * parent_model.state_dict()[key]
+
+    # Load the combined parameters into the child model
+    child_model.load_state_dict(child_dict)
+    return child_model
+
+
+class ModelLibrary:
+    def __init__(self, save_dir):
+        self.save_dir = save_dir
+        self.successful_models = {
+            "594": [],  # Models that successfully crossed the first barrier
+            "722": [],  # Models that successfully crossed the second barrier
+            "898": [],  # Models that successfully crossed the final pipe
+            "1500+": [],  # Models that got really far
+            "completion": []  # Models that completed the level
+        }
+
+    def add_successful_model(self, model, barrier_type, max_dist):
+        """Store a model that successfully crossed a barrier."""
+        self.successful_models[barrier_type].append({
+            "model": model.state_dict(),
+            "distance": max_dist,
+            "timestamp": time.time()
+        })
+
+        # Save the model
+        save_path = self.save_dir / f"success_{barrier_type}_{max_dist}.pt"
+        torch.save(model.state_dict(), save_path)
+        print(
+            f"Saved successful model at barrier {barrier_type} to {save_path}")
+
+    def breed_new_model(self, target_barrier="898"):
+        """Create a new model by breeding successful models focused on a specific barrier."""
+        # Select parents based on the target barrier
+        potential_parents = []
+
+        # Add models that passed the target barrier
+        if target_barrier in self.successful_models and self.successful_models[target_barrier]:
+            potential_parents.extend(self.successful_models[target_barrier])
+
+        # Add models that got further (if available)
+        barriers = ["594", "722", "898", "1500+", "completion"]
+        target_idx = barriers.index(target_barrier)
+        for idx in range(target_idx + 1, len(barriers)):
+            if self.successful_models[barriers[idx]]:
+                potential_parents.extend(self.successful_models[barriers[idx]])
+
+        # If we don't have enough parents, use whatever we have
+        if len(potential_parents) < 2:
+            print("Not enough successful models for breeding yet")
+            return None
+
+        # Sort by distance and select top performers
+        potential_parents.sort(key=lambda x: x["distance"], reverse=True)
+        top_parents = potential_parents[:min(3, len(potential_parents))]
+
+        # Create a new model
+        new_model = DuelingDQN(
+            input_channels=4, action_count=action_count).to(device)
+
+        # Weighted combination based on performance
+        weights = [0.5, 0.3, 0.2]  # Adjust weights based on your preference
+        for key in new_model.state_dict():
+            # Initialize with zeros
+            new_model.state_dict()[key].zero_()
+
+            # Add weighted parameters
+            for i, parent in enumerate(top_parents):
+                if i < len(weights):
+                    new_model.state_dict()[
+                        key] += weights[i] * parent["model"][key]
+
+        return new_model
+
+
 # ============================
 # 4. Environment Wrapper with Advanced Reward Shaping
 # ============================
@@ -1342,7 +1543,11 @@ class EnhancedMarioEnv:
         self.total_reward = 0
 
         # Stage checkpoints for better rewards
-        self.checkpoints = [250, 500, 600, 700, 800, 900, 1000, 1500, 2000]
+        self.checkpoints = [250, 400, 500,
+                            594, 610, 625, 650,  # More granular checkpoints after first pipe
+                            700, 722, 735, 750, 775,  # More granular checkpoints after second pipe
+                            850, 898, 910, 925, 950, 975,  # More granular checkpoints after final pipe
+                            1000, 1050, 1100, 1150, 1200, 1300, 1400, 1500, 1600, 1800, 2000, 2200, 2400, 2600, 2800]
         self.passed_checkpoints = set()
 
         self.success_memory_size = 5000  # Size of success memory buffer
@@ -1422,20 +1627,32 @@ class EnhancedMarioEnv:
         # Progress reward - horizontal movement
         x_progress = x_pos - self.last_x_pos
         if x_pos > self.max_x_pos:
-            # Bonus for furthest position yet
-            shaped_reward += 0.5 * (x_pos - self.max_x_pos)
-            self.max_x_pos = x_pos
-            self.stuck_counter = 0
+            # Progressive scale that increases with position
+            position_scale = 1.0
+            if x_pos > 1500:
+                position_scale = 4.0  # 4x reward past 1500
+            elif x_pos > 1200:
+                position_scale = 3.0  # 3x reward past 1200
+            elif x_pos > 900:
+                position_scale = 2.0  # 2x reward past 900
 
-        if x_progress < 0:
-            shaped_reward -= 0.15
+        if x_progress > 0:
+            shaped_reward += 1.0 * x_progress  # Increased from 0.5 to 1.0
+            self.stuck_counter = 0
+        else:
+            shaped_reward -= 0.05
             self.stuck_counter += 1
 
         if x_progress == 0:
-            # Additional penalty that grows with consecutive stationary frames
-            standing_still_penalty = min(
-                0.35, 0.05 * self.stuck_counter)
+            standing_still_penalty = min(0.35, 0.05 * self.stuck_counter)
             shaped_reward -= standing_still_penalty
+
+            if x_pos < 200 and x_progress == 0:
+                standing_still_penalty = min(0.5, 0.15 * self.stuck_counter)
+                shaped_reward -= standing_still_penalty
+                if self.stuck_counter > 15:
+                    print(
+                        f"EARLY GAME STUCK PENALTY: -{standing_still_penalty:.2f}")
 
         if x_pos > 725:
             # Increase patience for later stages
@@ -1520,31 +1737,60 @@ class EnhancedMarioEnv:
                 print(
                     f"MAJOR PROGRESS: Cleared gap at 1125! Position: {x_pos}")
 
-        if in_breakthrough_region:
-            # Reset stuck counter when in a breakthrough region
-            self.stuck_at_594_count = 0
+        if 600 <= x_pos <= 650:  # After first pipe
+            # Gradual tapering reward for continued progress after pipe
+            if x_progress > 0:
+                post_pipe_reward = 3.0 * (1.0 - ((x_pos - 600) / 50))
+                shaped_reward += post_pipe_reward
+                if post_pipe_reward > 1.0:
+                    print(f"POST-PIPE-594 MOMENTUM: +{post_pipe_reward:.2f}")
 
-            # Vertical movement analysis
-            y_change = y_pos - self.last_y_pos
+        elif 730 <= x_pos <= 780:  # After second pipe
+            # Stronger post-pipe momentum rewards for 722
+            if x_progress > 0:
+                post_pipe_reward = 4.0 * (1.0 - ((x_pos - 730) / 50))
+                shaped_reward += post_pipe_reward
+                if post_pipe_reward > 1.0:
+                    print(f"POST-PIPE-722 MOMENTUM: +{post_pipe_reward:.2f}")
 
-            if is_airborne:
-                # Advanced jump reward with progressive scaling
-                # Exponential curve that becomes more rewarding at higher jumps
-                jump_reward = 0.25 * (jump_height ** 2.2)
-                shaped_reward += jump_reward
+        elif 900 <= x_pos <= 950:  # After final pipe
+            # Maximum post-pipe momentum rewards for final pipe
+            if x_progress > 0:
+                post_pipe_reward = 6.0 * (1.0 - ((x_pos - 900) / 50))
+                shaped_reward += post_pipe_reward
+                if post_pipe_reward > 1.0:
+                    print(f"POST-PIPE-898 MOMENTUM: +{post_pipe_reward:.2f}")
 
-                # Specific jump action bonuses
-                if action in [2, 3, 4, 5]:  # Jump actions in SIMPLE_MOVEMENT
-                    # Bonus for jump actions with height
-                    action_jump_bonus = 0.4 * (jump_height / 20)
-                    shaped_reward += action_jump_bonus
+        if is_airborne:
+            # Base jump reward - much smaller by default
+            jump_reward = 0.05 * jump_height
 
+            # Only give exponential rewards for jumps when:
+            # 1. In breakthrough regions (near barriers/obstacles)
+            # 2. When jump is high enough to be useful (over 30 units)
+            # 3. At specific x positions that correspond to obstacles
+
+            # Define obstacle positions
+            obstacles = [594, 722, 898, 1125, 1260, 1450, 1600, 1800, 2000]
+
+            near_obstacle = False
+            for obs_pos in obstacles:
+                if abs(x_pos - obs_pos) < 25:
+                    near_obstacle = True
+                    break
+
+            # Only give big rewards for meaningful jumps
+            if (in_breakthrough_region or near_obstacle) and jump_height > 30:
+                # Now use the exponential scale for important jumps
+                obstacle_jump_reward = 0.25 * (jump_height ** 2.2)
+                jump_reward = obstacle_jump_reward
+
+                # Print only for significant jumps
+                if jump_reward > 5.0:
                     print(
-                        f"Advanced Jump Reward: "
-                        f"Base={jump_reward:.2f}, "
-                        f"Action Bonus={action_jump_bonus:.2f}, "
-                        f"Total Height={jump_height}"
-                    )
+                        f"Strategic Jump Reward: {jump_reward:.2f} at position {x_pos}, height {jump_height}")
+
+            shaped_reward += jump_reward
 
             # Sprint-Jump Sequence Bonus with Advanced Detection
             if len(self.last_actions) >= 3:
@@ -1779,6 +2025,110 @@ def plot_metrics(save_dir, metrics):
 
     print(f"Metrics plots saved to {figures_dir}")
 
+
+def enhance_barrier_898_focus(agent, env):
+    """Modify agent and environment to focus heavily on the 898 barrier."""
+
+    # 1. Increase the memory capacity specifically for 898 barrier experiences
+    # Much larger than other barriers
+    agent.success_memory["898"] = deque(maxlen=5000)
+
+    # 2. Boost the reward multiplier in the environment
+    original_step = env.step
+
+    def enhanced_step(action):
+        state, reward, done, info = original_step(action)
+        x_pos = info.get('x_pos', 0)
+
+        # Extreme focus on the 898 barrier region
+        if 890 <= x_pos <= 910:
+            # Massive reward for successful actions in this region
+            y_pos = info.get('y_pos', 0)
+
+            # Strongest focus on the approach to the pipe
+            if 890 <= x_pos < 898:
+                # Particularly reward high jumps which are necessary
+                if y_pos < 70:  # Mario is jumping
+                    jump_height = 79 - y_pos
+                    reward += jump_height * 0.8  # Much higher jump reward
+
+                # Reward right-jump actions heavily
+                if action == 4:  # Assuming 4 is jump-right
+                    reward += 10.0  # Massive bias toward jump-right
+
+            # Extreme reward for crossing
+            if x_pos > 898 and env.last_x_pos <= 898:
+                reward += 100.0  # Double the normal breakthrough reward
+                print(
+                    f"CRITICAL BREAKTHROUGH: Crossed 898 pipe! Position: {x_pos}")
+
+        # For post-pipe success, continue the strong rewards
+        elif 900 <= x_pos <= 950:
+            reward += x_pos - 900  # Linear reward based on progress after pipe
+
+        env.last_x_pos = x_pos
+        return state, reward, done, info
+
+    # Replace the step function
+    env.step = enhanced_step
+
+    # 3. Modify the learning schedule to focus more on 898 success examples
+    original_learn = agent.learn
+
+    def enhanced_learn():
+        result = original_learn()
+
+        # Extra learning passes on 898 examples
+        # Much more frequent (every 5 steps)
+        if agent.learn_step_counter % 5 == 0:
+            if "898" in agent.success_memory and len(agent.success_memory["898"]) > 0:
+                print(
+                    f"EXTRA FOCUS: Learning from {len(agent.success_memory['898'])} examples at 898 barrier")
+
+                # Take many more examples from the 898 barrier memory
+                batch_size = min(64, len(agent.success_memory["898"]))
+                if batch_size > 0:
+                    # ... learning code similar to your existing implementation ...
+                    # but with even higher reward multipliers (3-5x) and learning rates
+                    pass
+
+        return result
+
+    # Replace the learn function
+    agent.learn = enhanced_learn
+
+    # 4. Add a position-based exploration strategy specifically for 898
+    original_act = agent.act
+
+    def enhanced_act(state, reuse_tensor=None):
+        # Extract position if possible
+        x_pos = 0
+        if hasattr(state, 'info') and hasattr(state.info, 'x_pos'):
+            x_pos = state.info.x_pos
+
+        # Very targeted exploration rate adjustments
+        if 890 <= x_pos <= 897:
+            # Just before the pipe, temporarily boost exploration
+            # to ensure we try different jump patterns
+            temp_rate = max(0.3, agent.exploration_rate * 2)
+            agent.exploration_rate = temp_rate
+        elif x_pos > 900:
+            # After the pipe, reduce exploration to capitalize on success
+            agent.exploration_rate = min(agent.exploration_rate, 0.1)
+
+        action = original_act(state, reuse_tensor)
+
+        # Force exploration of jump action more frequently near pipe
+        if 890 <= x_pos <= 897 and random.random() < 0.4:
+            return 4  # Jump-right action
+
+        return action
+
+    # Replace the act function
+    agent.act = enhanced_act
+
+    return agent, env
+
 # ============================
 # Training Loop with Performance Optimizations
 # ============================
@@ -1791,6 +2141,9 @@ def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
     save_dir = Path("mario_checkpoints") / \
         datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create model library for breeding successful models
+    model_library = ModelLibrary(save_dir)
 
     # Create environments with processing offloaded to CPU
     env, action_count = make_env(action_type)
@@ -1819,6 +2172,10 @@ def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
         # Load checkpoint if provided
         if checkpoint_path:
             agent.load(checkpoint_path)
+
+    # Enhance barrier 898 focus if requested
+    # Uncomment this line to apply focused learning on barrier 898
+    # agent, wrapped_env = enhance_barrier_898_focus(agent, wrapped_env)
 
     # Initialize metrics tracking
     metrics = {
@@ -1878,6 +2235,7 @@ def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
             episode_q = []
             step_times = []
             frame_count = 0
+            max_x_pos = 40  # Track maximum position in this episode
 
             # Episode loop
             while not done:
@@ -1887,6 +2245,10 @@ def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
                 # Take action
                 action = agent.act(state)
                 next_state, reward, done, info = safe_step(wrapped_env, action)
+
+                # Track max position
+                x_pos = info.get('x_pos', 0)
+                max_x_pos = max(max_x_pos, x_pos)
 
                 # Cache experience
                 agent.cache(state, next_state, action, reward, done, info)
@@ -1966,8 +2328,141 @@ def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
             agent.update_exploration_rate(episode)
             agent.periodic_exploration_reset(episode)
 
-            # Log to tensorboard and other metric tracking
-            # ... existing logging code ...
+            # Store successful models for breeding
+            # First barrier: 594
+            if x_distance > 594:
+                # Check if this is a new breakthrough (not achieved in recent episodes)
+                is_new_breakthrough = True
+                # Convert to list and then slice
+                for d in list(recent_distances)[-10:]:
+                    if d != x_distance and d >= 594:
+                        is_new_breakthrough = False
+                        break
+
+                if is_new_breakthrough:
+                    model_library.add_successful_model(
+                        agent.policy_net, "594", x_distance)
+                    print(
+                        f"Added successful model for barrier 594! Distance: {x_distance}")
+
+            # Second barrier: 722
+            if x_distance > 722:
+                # Check if this is a new breakthrough (not achieved in recent episodes)
+                is_new_breakthrough = True
+                # Convert to list and then slice
+                for d in list(recent_distances)[-10:]:
+                    if d != x_distance and d >= 722:
+                        is_new_breakthrough = False
+                        break
+
+                if is_new_breakthrough:
+                    model_library.add_successful_model(
+                        agent.policy_net, "722", x_distance)
+                    print(
+                        f"Added successful model for barrier 722! Distance: {x_distance}")
+
+            # Third barrier: 898 (most important)
+            if x_distance > 898:
+                # Check if this is a new breakthrough (not achieved in recent episodes)
+                is_new_breakthrough = True
+                # Convert to list and then slice
+                for d in list(recent_distances)[-10:]:
+                    if d != x_distance and d >= 898:
+                        is_new_breakthrough = False
+                        break
+
+                if is_new_breakthrough:
+                    model_library.add_successful_model(
+                        agent.policy_net, "898", x_distance)
+                    print(
+                        f"Added successful model for barrier 898! Distance: {x_distance}")
+
+            # Far progress: 1500+
+            if x_distance > 1500:
+                # Check if this is a new breakthrough (not achieved in recent episodes)
+                is_new_breakthrough = True
+                # Convert to list and then slice
+                for d in list(recent_distances)[-10:]:
+                    if d != x_distance and d >= 1500:
+                        is_new_breakthrough = False
+                        break
+
+                if is_new_breakthrough:
+                    model_library.add_successful_model(
+                        agent.policy_net, "1500+", x_distance)
+                    print(
+                        f"Added successful model for distance 1500+! Distance: {x_distance}")
+
+            # Level completion
+            if flag_get:
+                model_library.add_successful_model(
+                    agent.policy_net, "completion", x_distance)
+                print(
+                    f"Added successful model for level completion! Distance: {x_distance}")
+
+            # Breed models periodically
+            if episode > 0 and episode % 20 == 0:
+                # Try to breed a model specifically focused on barrier 898
+                new_model = model_library.breed_new_model(target_barrier="898")
+
+                if new_model is not None:
+                    print("Successfully bred a new model focused on barrier 898!")
+
+                    # Create a new agent using the bred model
+                    bred_agent = MarioAgent(
+                        input_channels=4,
+                        action_count=action_count,
+                        save_dir=save_dir,
+                        batch_size=INCREASED_BATCH_SIZE,
+                        memory_size=150000,
+                        lr=3e-4
+                    )
+
+                    # Replace the policy network with the bred model
+                    bred_agent.policy_net = new_model
+                    bred_agent.target_net.load_state_dict(
+                        new_model.state_dict())
+
+                    # Apply enhanced focus on barrier 898
+                    bred_agent, bred_env = enhance_barrier_898_focus(
+                        bred_agent, EnhancedMarioEnv(make_env(action_type)[0]))
+
+                    # Run a short training session with the bred agent
+                    print("Training bred agent for 5 episodes...")
+                    for bred_episode in range(5):
+                        bred_state = bred_env.reset()
+                        bred_done = False
+                        bred_total_reward = 0
+
+                        while not bred_done:
+                            bred_action = bred_agent.act(bred_state)
+                            bred_next_state, bred_reward, bred_done, bred_info = safe_step(
+                                bred_env, bred_action)
+                            bred_agent.cache(
+                                bred_state, bred_next_state, bred_action, bred_reward, bred_done, bred_info)
+
+                            if bred_agent.curr_step % 4 == 0:
+                                bred_agent.learn()
+
+                            bred_state = bred_next_state
+                            bred_total_reward += bred_reward
+
+                        bred_distance = bred_info.get('x_pos', 0)
+                        print(
+                            f"Bred agent episode {bred_episode}: Reward={bred_total_reward:.2f}, Distance={bred_distance}")
+
+                        # If the bred agent performs well, consider using it as the main agent
+                        if bred_distance > 898:
+                            print(
+                                "Bred agent successfully crossed barrier 898! Adopting its weights.")
+                            agent.policy_net.load_state_dict(
+                                bred_agent.policy_net.state_dict())
+                            agent.target_net.load_state_dict(
+                                bred_agent.target_net.state_dict())
+                            break
+
+                    # Clean up
+                    bred_env.close()
 
             # Print episode summary
             print(f"Episode {episode}/{num_episodes}: "
