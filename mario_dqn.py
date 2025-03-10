@@ -334,6 +334,7 @@ class MarioAgent:
             "594": deque(maxlen=1500),  # For the first barrier
             "722": deque(maxlen=1000),  # For the second barrier
             "898": deque(maxlen=750),  # For the third barrier
+            "1125": deque(maxlen=1000),  # For the hole around position 1125
             "completion": deque(maxlen=500)  # For level completions
         }
 
@@ -606,7 +607,7 @@ class MarioAgent:
         should_reset = False
 
         # Reset exploration rate every 50 episodes
-        if episode_num > 0 and episode_num % 50 == 0:
+        if episode_num > 0 and episode_num % 100 == 0:
             should_reset = True
 
         # Reset if we're stuck at a specific stage for too long
@@ -618,13 +619,13 @@ class MarioAgent:
             # Adaptive reset based on episode number
             if episode_num < 100:
                 # Higher reset in early episodes
-                new_rate = min(0.7, self.exploration_rate * 2.5)
+                new_rate = min(0.48, self.exploration_rate * 2.5)
             elif episode_num < 300:
                 # Moderate reset in middle episodes
-                new_rate = min(0.5, self.exploration_rate * 2.0)
-            else:
-                # Smaller reset in later episodes to maintain learning stability
-                new_rate = min(0.3, self.exploration_rate * 1.7)
+                new_rate = min(0.35, self.exploration_rate * 2.0)
+            else:  # episode_num >= 300
+                # Less aggressive reset for very late episodes
+                new_rate = min(0.18, self.exploration_rate * 1.5)
 
             self.exploration_rate = new_rate
             print(
@@ -852,10 +853,28 @@ class MarioAgent:
                         f"SUCCESS: Crossed barrier at 722! Position: {current_pos}")
 
                 # Third barrier: 898
-                elif prev_pos < 898 and current_pos > 898 and progress > 0:
-                    barrier_crossed = "898"
-                    print(
-                        f"SUCCESS: Crossed barrier at 898! Position: {current_pos}")
+                elif prev_pos < 898 and current_pos > 900 and progress > 2.0:  # More strict requirements
+                    # Additional check to ensure Mario is still valid (not falling in a pit)
+                    y_pos = info.get('y_pos', 0)  # Get y_pos from info
+                    if y_pos < 79 and y_pos > 30:  # Check if Mario is in a reasonable y-position
+                        barrier_crossed = "898"
+                        print(
+                            f"CONFIRMED SUCCESS: Crossed barrier at 898! Position: {current_pos}, Progress: {progress}, Y-pos: {y_pos}")
+                    else:
+                        print(
+                            f"FAKE CROSSING DETECTED: Position {current_pos} but invalid Y-pos: {y_pos}")
+
+                # Fourth barrier: 1125 (the hole)
+                elif prev_pos < 1120 and current_pos > 1130 and progress > 2.0:
+                    y_pos = info.get('y_pos', 0)
+                    # Only count it as success if Mario is at a reasonable height (not falling in the hole)
+                    if y_pos < 79 and y_pos > 35:
+                        barrier_crossed = "1125"
+                        print(
+                            f"SUCCESS: Cleared hole at 1125! Position: {current_pos}, Y-pos: {y_pos}")
+                    else:
+                        print(
+                            f"POTENTIAL FALLING DETECTED: Position {current_pos} with Y-pos: {y_pos}")
 
                 # Store successful crossing in success memory
                 if barrier_crossed is not None:
@@ -1206,6 +1225,16 @@ class MarioAgent:
                     # Restore original learning rate
                     self.optimizer.param_groups[0]['lr'] = original_lr
 
+        if self.learn_step_counter % 18 == 0:
+            if "1125" in self.success_memory and len(self.success_memory["1125"]) > 0:
+                print(
+                    f"Reinforcing learning from {len(self.success_memory['1125'])} examples at hole (1125)")
+
+                # Take examples from the 1125 barrier memory
+                batch_size = min(24, len(self.success_memory["1125"]))
+                selected_indices = random.sample(
+                    range(len(self.success_memory["1125"])), batch_size)
+
         # Full update less frequently
         if self.learn_step_counter % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -1373,6 +1402,23 @@ class EnhancedMarioEnv:
         # Start with environment reward (typically very small)
         shaped_reward = reward * 0.1
 
+        # SPECIFIC HANDLING FOR BREAKTHROUGH POINTS
+        # Define key breakthrough regions with their unique characteristics
+        breakthrough_regions = [
+            {"start": 590, "end": 605, "first_key_pos": 594, "name": "594 Barrier"},
+            {"start": 715, "end": 730, "first_key_pos": 722,
+                "name": "722 Barrier", "priority": 1.5},
+            {"start": 890, "end": 910, "first_key_pos": 898,
+                "name": "898 Barrier", "priority": 2.00},
+            {"start": 1115, "end": 1135, "first_key_pos": 1125,
+                "name": "1125 Jump", "priority": 1.75}
+        ]
+
+        # Track if we're in any breakthrough region
+        in_breakthrough_region = any(
+            region["start"] <= x_pos <= region["end"] for region in breakthrough_regions
+        )
+
         # Progress reward - horizontal movement
         x_progress = x_pos - self.last_x_pos
         if x_pos > self.max_x_pos:
@@ -1380,6 +1426,16 @@ class EnhancedMarioEnv:
             shaped_reward += 0.5 * (x_pos - self.max_x_pos)
             self.max_x_pos = x_pos
             self.stuck_counter = 0
+
+        if x_progress < 0:
+            shaped_reward -= 0.15
+            self.stuck_counter += 1
+
+        if x_progress == 0:
+            # Additional penalty that grows with consecutive stationary frames
+            standing_still_penalty = min(
+                0.35, 0.05 * self.stuck_counter)
+            shaped_reward -= standing_still_penalty
 
         if x_pos > 725:
             # Increase patience for later stages
@@ -1394,16 +1450,6 @@ class EnhancedMarioEnv:
         self.last_actions.append(action)
         if len(self.last_actions) > 5:
             self.last_actions.pop(0)
-
-        # SPECIFIC HANDLING FOR BREAKTHROUGH POINTS
-        # Define key breakthrough regions with their unique characteristics
-        breakthrough_regions = [
-            {"start": 590, "end": 605, "first_key_pos": 594, "name": "594 Barrier"},
-            {"start": 715, "end": 730, "first_key_pos": 722,
-                "name": "722 Barrier", "priority": 1.5},
-            {"start": 890, "end": 910, "first_key_pos": 898,
-                "name": "898 Barrier", "priority": 2.00}
-        ]
 
         if 590 <= x_pos <= 600:  # First barrier region
             if action == 4:  # Most successful action at this barrier based on logs
@@ -1452,10 +1498,27 @@ class EnhancedMarioEnv:
                 print(
                     f"MAJOR BREAKTHROUGH: Crossed final pipe at 898! Position: {x_pos}")
 
-        # Track if we're in any breakthrough region
-        in_breakthrough_region = any(
-            region["start"] <= x_pos <= region["end"] for region in breakthrough_regions
-        )
+        elif 1115 <= x_pos <= 1135:  # The area with the hole
+            # Reward jumping actions heavily here
+            if is_airborne and jump_height > 20:  # If Mario is jumping
+                shaped_reward += jump_height * 0.5  # Stronger scaling with jump height
+
+            # Give strong rewards for sprint-jump sequences
+            if len(self.last_actions) >= 3:
+                sprint_jump_sequence = (
+                    self.last_actions[-1] in [2, 3, 4] and  # Jump actions
+                    self.last_actions[-2] == 1 and  # Right/sprint action
+                    self.last_actions[-3] == 1  # Preceding right/sprint action
+                )
+                if sprint_jump_sequence:
+                    shaped_reward += 8.0  # Very strong reward for sprint-jump here
+                    print(f"CRITICAL JUMP REINFORCEMENT at 1125: +8.0")
+
+            # Add bonus for successful crossing
+            if x_pos > 1130 and self.last_x_pos <= 1125:
+                shaped_reward += 40.0  # Major reward for crossing this specific area
+                print(
+                    f"MAJOR PROGRESS: Cleared gap at 1125! Position: {x_pos}")
 
         if in_breakthrough_region:
             # Reset stuck counter when in a breakthrough region
