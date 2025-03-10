@@ -34,31 +34,23 @@ state_tensor = torch.zeros((4, 84, 84), device=device, dtype=torch.uint8)
 next_state_tensor = torch.zeros((4, 84, 84), device=device, dtype=torch.uint8)
 
 
-def safe_step(env, action, max_retry=3):
-    """Safely perform a step in the environment with error handling."""
-    for attempt in range(max_retry):
+def safe_step(env, action):
+    """Safely perform a step in the environment with basic error handling."""
+    try:
+        return env.step(action)
+    except Exception as e:
+        print(f"Environment step error: {e}")
+        # If we encounter an error, reset the environment
         try:
-            return env.step(action)
-        except (OSError, RuntimeError) as e:
-            if attempt < max_retry - 1:
-                print(
-                    f"Environment step error: {e}, retrying ({attempt+1}/{max_retry})...")
-                time.sleep(0.1)  # Small delay before retry
-                continue
-            else:
-                # If we've exhausted retries, reset the environment
-                print(
-                    f"Environment step failed after {max_retry} attempts. Resetting...")
-                try:
-                    state = env.reset()
-                    # Return a safe default
-                    return state, 0.0, True, {"x_pos": 0, "flag_get": False}
-                except Exception as reset_error:
-                    print(f"Environment reset also failed: {reset_error}")
-                    # Create a minimal valid state if everything fails
-                    dummy_state = np.zeros((4, 84, 84, 1), dtype=np.uint8)
-                    dummy_info = {"x_pos": 0, "flag_get": False}
-                    return dummy_state, 0.0, True, dummy_info
+            state = env.reset()
+            # Return a safe default
+            return state, 0.0, True, {"x_pos": 0, "flag_get": False}
+        except Exception as reset_error:
+            print(f"Environment reset also failed: {reset_error}")
+            # Create a minimal valid state if everything fails
+            dummy_state = np.zeros((4, 84, 84, 1), dtype=np.uint8)
+            dummy_info = {"x_pos": 0, "flag_get": False}
+            return dummy_state, 0.0, True, dummy_info
 
 
 def cuda_error_handling(func):
@@ -339,8 +331,8 @@ class MarioAgent:
         self.target_net.eval()  # Target network in evaluation mode
 
         self.success_memory = {
-            "594": deque(maxlen=750),  # For the first barrier
-            "722": deque(maxlen=750),  # For the second barrier
+            "594": deque(maxlen=1500),  # For the first barrier
+            "722": deque(maxlen=1000),  # For the second barrier
             "898": deque(maxlen=750),  # For the third barrier
             "completion": deque(maxlen=500)  # For level completions
         }
@@ -431,7 +423,7 @@ class MarioAgent:
         self._warmup_gpu()
 
     def epsilon_boost_strategy(self, x_pos):
-        """Dynamic epsilon strategy that adapts based on progress and barriers"""
+        """Enhanced dynamic epsilon strategy with stronger focus on final pipe"""
         # Base exploration rate
         base_rate = self.exploration_rate
 
@@ -439,31 +431,48 @@ class MarioAgent:
         near_barrier = False
         boost_factor = 1.0
 
-        # First barrier boost (strongest since it's most problematic)
+        # First barrier boost
         if 585 <= x_pos <= 610:
             near_barrier = True
             boost_factor = 3.0
-            # Progressive boost that increases as we get closer to the exact barrier point
             proximity_boost = max(0, 1.0 - abs(594 - x_pos) / 15)
             boost_factor += proximity_boost * 2
 
         # Second barrier boost
         elif 715 <= x_pos <= 735:
             near_barrier = True
-            boost_factor = 2.5
-            proximity_boost = max(0, 1.0 - abs(722 - x_pos) / 15)
-            boost_factor += proximity_boost * 1.5
+            boost_factor = 3.0
+            if x_pos < 722:
+                proximity_boost = max(0, 1.0 - abs(722 - x_pos) / 15)
+                boost_factor += proximity_boost * 2.0
+            else:
+                boost_factor = 1.5
 
-        # Third barrier boost
+        # Final pipe boost (enhanced for 898)
         elif 885 <= x_pos <= 910:
             near_barrier = True
-            boost_factor = 2.0
-            proximity_boost = max(0, 1.0 - abs(898 - x_pos) / 15)
-            boost_factor += proximity_boost
+
+            if x_pos < 898:
+                # Higher exploration when approaching to find the right action sequence
+                boost_factor = 3.5  # Increased from 2.0
+                proximity_boost = max(0, 1.0 - abs(898 - x_pos) / 15)
+                boost_factor += proximity_boost * 3.0  # Increased from 1.0
+
+                # Extra boost factor based on proximity to encourage experimentation
+                if 890 <= x_pos <= 897:
+                    # Very close to the pipe - try varied approaches
+                    boost_factor += 1.0
+            else:
+                # Immediately reduce exploration after crossing to exploit successful strategy
+                boost_factor = 1.0  # Even lower to strongly exploit working strategies
 
         if near_barrier:
-            # Calculate boosted rate with a cap
-            boosted_rate = min(0.7, base_rate * boost_factor)
+            # Calculate boosted rate with a higher cap for 898
+            cap = 0.7
+            if 885 <= x_pos <= 897:  # Right before final pipe
+                cap = 0.8  # Allow even higher exploration specifically here
+
+            boosted_rate = min(cap, base_rate * boost_factor)
 
             # Add a small random factor to prevent getting stuck in loops
             randomization = random.uniform(0.9, 1.1)
@@ -1065,6 +1074,138 @@ class MarioAgent:
 
             self.target_net.load_state_dict(target_net_state_dict)
 
+        if self.learn_step_counter % 20 == 0:
+            if "722" in self.success_memory and len(self.success_memory["722"]) > 0:
+                print(
+                    f"Reinforcing learning from {len(self.success_memory['722'])} examples at 722 barrier")
+
+                # Take up to 16 examples from the 722 barrier memory
+                batch_size = min(16, len(self.success_memory["722"]))
+                selected_indices = random.sample(
+                    range(len(self.success_memory["722"])), batch_size)
+
+                # Create batch tensors
+                state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                          device=self.device, dtype=torch.float32)
+                next_state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                               device=self.device, dtype=torch.float32)
+                action_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.long)
+                reward_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+                done_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+
+                # Fill batch tensors
+                for i, idx in enumerate(selected_indices):
+                    s_state, s_next_state, s_action, s_reward, s_done = self.success_memory[
+                        "722"][idx]
+                    state_batch[i] = s_state.to(self.device)
+                    next_state_batch[i] = s_next_state.to(self.device)
+                    action_batch[i, 0] = s_action
+                    # Increase reward for 722 examples specifically
+                    reward_batch[i, 0] = s_reward * 1.5
+                    done_batch[i, 0] = float(s_done)
+
+                # Learn from this special 722-focused batch
+                with torch.cuda.amp.autocast():
+                    # Boosted learning rate specific to 722 examples
+                    original_lr = self.optimizer.param_groups[0]['lr']
+                    # Higher boost for 722
+                    self.optimizer.param_groups[0]['lr'] = original_lr * 3.0
+
+                    # Compute current Q values
+                    current_q_values = self.policy_net(
+                        state_batch).gather(1, action_batch)
+
+                    # Compute next Q values
+                    with torch.no_grad():
+                        next_actions = self.policy_net(next_state_batch).max(1)[
+                            1].unsqueeze(1)
+                        next_q_values = self.target_net(
+                            next_state_batch).gather(1, next_actions)
+                        target_q_values = reward_batch + \
+                            (1 - done_batch) * self.gamma * next_q_values
+
+                    # Use a stronger weight for 722 examples
+                    loss = F.smooth_l1_loss(current_q_values, target_q_values)
+
+                    # Optimize
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy_net.parameters(), max_norm=10.0)
+                    self.optimizer.step()
+
+                    # Restore original learning rate
+                    self.optimizer.param_groups[0]['lr'] = original_lr
+
+        if self.learn_step_counter % 15 == 0:  # Even more frequent reinforcement for 898
+            if "898" in self.success_memory and len(self.success_memory["898"]) > 0:
+                print(
+                    f"Reinforcing learning from {len(self.success_memory['898'])} examples at final pipe (898)")
+
+                # Take up to all examples from the 898 barrier memory (it's very important)
+                batch_size = min(32, len(self.success_memory["898"]))
+                selected_indices = random.sample(
+                    range(len(self.success_memory["898"])), batch_size)
+
+                # Create batch tensors
+                state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                          device=self.device, dtype=torch.float32)
+                next_state_batch = torch.zeros((batch_size, self.input_channels, 84, 84),
+                                               device=self.device, dtype=torch.float32)
+                action_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.long)
+                reward_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+                done_batch = torch.zeros(
+                    (batch_size, 1), device=self.device, dtype=torch.float32)
+
+                # Fill batch tensors
+                for i, idx in enumerate(selected_indices):
+                    s_state, s_next_state, s_action, s_reward, s_done = self.success_memory[
+                        "898"][idx]
+                    state_batch[i] = s_state.to(self.device)
+                    next_state_batch[i] = s_next_state.to(self.device)
+                    action_batch[i, 0] = s_action
+                    # Even higher reward multiplier for 898 examples (final pipe)
+                    reward_batch[i, 0] = s_reward * 2.5
+                    done_batch[i, 0] = float(s_done)
+
+                # Learn from this special 898-focused batch
+                with torch.cuda.amp.autocast():
+                    # Maximum boosted learning rate for 898 examples
+                    original_lr = self.optimizer.param_groups[0]['lr']
+                    # Highest boost for final pipe
+                    self.optimizer.param_groups[0]['lr'] = original_lr * 5.0
+
+                    # Compute current Q values
+                    current_q_values = self.policy_net(
+                        state_batch).gather(1, action_batch)
+
+                    # Compute next Q values
+                    with torch.no_grad():
+                        next_actions = self.policy_net(next_state_batch).max(1)[
+                            1].unsqueeze(1)
+                        next_q_values = self.target_net(
+                            next_state_batch).gather(1, next_actions)
+                        target_q_values = reward_batch + \
+                            (1 - done_batch) * self.gamma * next_q_values
+
+                    # Use a stronger weight for 898 examples
+                    loss = F.smooth_l1_loss(current_q_values, target_q_values)
+
+                    # Optimize
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.policy_net.parameters(), max_norm=10.0)
+                    self.optimizer.step()
+
+                    # Restore original learning rate
+                    self.optimizer.param_groups[0]['lr'] = original_lr
+
         # Full update less frequently
         if self.learn_step_counter % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -1155,7 +1296,7 @@ class EnhancedMarioEnv:
         self.max_x_pos = 40
         self.last_time = 400
         self.stuck_counter = 0
-        self.max_stuck_steps = 50
+        self.max_stuck_steps = 75
         self.last_y_pos = 0
         self.jump_count = 0
         self.jump_heights = []
@@ -1211,7 +1352,6 @@ class EnhancedMarioEnv:
         return state
 
     def step(self, action):
-        """Take action and apply reward shaping"""
         # Increment step counter
         self.episode_step_count += 1
 
@@ -1226,6 +1366,10 @@ class EnhancedMarioEnv:
         coins = info.get('coins', 0)
         status = info.get('status', 'small')  # small, tall, fireball
 
+        # Calculate jump height early - before any conditional uses
+        is_airborne = y_pos < 79  # If Mario is above ground level
+        jump_height = max(0, 79 - y_pos) if is_airborne else 0
+
         # Start with environment reward (typically very small)
         shaped_reward = reward * 0.1
 
@@ -1237,6 +1381,16 @@ class EnhancedMarioEnv:
             self.max_x_pos = x_pos
             self.stuck_counter = 0
 
+        if x_pos > 725:
+            # Increase patience for later stages
+            self.max_stuck_steps = 200
+        elif x_pos > 600:
+            # Medium patience for mid-level
+            self.max_stuck_steps = 150
+        else:
+            # Default for early game
+            self.max_stuck_steps = 100
+
         self.last_actions.append(action)
         if len(self.last_actions) > 5:
             self.last_actions.pop(0)
@@ -1245,26 +1399,63 @@ class EnhancedMarioEnv:
         # Define key breakthrough regions with their unique characteristics
         breakthrough_regions = [
             {"start": 590, "end": 605, "first_key_pos": 594, "name": "594 Barrier"},
-            {"start": 720, "end": 730, "first_key_pos": 722, "name": "722 Barrier"},
-            {"start": 890, "end": 910, "first_key_pos": 898, "name": "898 Barrier"}
+            {"start": 715, "end": 730, "first_key_pos": 722,
+                "name": "722 Barrier", "priority": 1.5},
+            {"start": 890, "end": 910, "first_key_pos": 898,
+                "name": "898 Barrier", "priority": 2.00}
         ]
 
         if 590 <= x_pos <= 600:  # First barrier region
             if action == 4:  # Most successful action at this barrier based on logs
                 shaped_reward += 2.0  # Bonus for using the statistically best action
 
-        elif 720 <= x_pos <= 730:  # Second barrier region
+        elif 715 <= x_pos <= 735:  # Second barrier region (expanded range)
+            # Reward best actions with higher bonuses
             if action == 4:  # Most successful action at this barrier based on logs
-                shaped_reward += 3.0  # Larger bonus for second barrier
+                shaped_reward += 5.0  # Increased from 3.0
+
+            # Add specific rewards for approaching the barrier with the right momentum
+            if 715 <= x_pos < 722:
+                # Reward for approaching with the right actions
+                if action in [1, 4]:  # Right and Jump-Right actions
+                    shaped_reward += 2.0
+
+                # Progressive reward that increases as agent gets closer to 722
+                proximity_reward = 0.5 * (1.0 - abs(722 - x_pos) / 7.0)
+                shaped_reward += proximity_reward
+
+            # Add bonus for successful crossing
+            if x_pos > 722 and self.last_x_pos <= 722:
+                shaped_reward += 30.0  # Major reward for crossing this specific barrier
+        elif 890 <= x_pos <= 910:  # Final pipe region
+            # Reward best actions with even higher bonuses for this critical barrier
+            if action == 4:  # Most successful jump action
+                shaped_reward += 7.0  # Highest reward for the most critical barrier
+
+            # Add specific rewards for approaching the final pipe with the right momentum
+            if 890 <= x_pos < 898:
+                # Heavy reward for sprint-jump approach
+                if action in [1, 4]:  # Right and Jump-Right actions
+                    shaped_reward += 3.0
+
+                # Higher progressive reward as agent gets closer to 898
+                proximity_reward = 1.0 * (1.0 - abs(898 - x_pos) / 8.0)
+                shaped_reward += proximity_reward
+
+                # Increased reward for being airborne near the pipe (needed to clear it)
+                if is_airborne and jump_height > 30:  # Need a high jump
+                    shaped_reward += jump_height * 0.3  # Scale with jump height
+
+            # Add large bonus for successful crossing
+            if x_pos > 898 and self.last_x_pos <= 898:
+                shaped_reward += 50.0  # Maximum reward for crossing this final barrier
+                print(
+                    f"MAJOR BREAKTHROUGH: Crossed final pipe at 898! Position: {x_pos}")
 
         # Track if we're in any breakthrough region
         in_breakthrough_region = any(
             region["start"] <= x_pos <= region["end"] for region in breakthrough_regions
         )
-
-        # Calculate jump height outside the conditional blocks so it's always defined
-        is_airborne = y_pos < 79  # If Mario is above ground level
-        jump_height = max(0, 79 - y_pos) if is_airborne else 0
 
         if in_breakthrough_region:
             # Reset stuck counter when in a breakthrough region
@@ -1315,14 +1506,18 @@ class EnhancedMarioEnv:
                 # Calculate vertical multiplier for breakthrough
                 vertical_multiplier = max(1, (79 - y_pos) / 20)
 
-                # Substantial breakthrough bonus with vertical emphasis
-                breakthrough_bonus = 50.0 * vertical_multiplier
+                # Add priority multiplier for specific barriers
+                priority_multiplier = region.get("priority", 1.0)
+
+                # Enhanced breakthrough bonus with priority for 722
+                breakthrough_bonus = 50.0 * vertical_multiplier * priority_multiplier
                 shaped_reward += breakthrough_bonus
 
                 print(
                     f"BREAKTHROUGH at {region['name']}! "
                     f"Position: {x_pos}, "
                     f"Vertical Multiplier: {vertical_multiplier:.2f}, "
+                    f"Priority: {priority_multiplier:.2f}, "
                     f"Bonus: {breakthrough_bonus:.2f}"
                 )
 
@@ -1340,12 +1535,10 @@ class EnhancedMarioEnv:
                 print(f"Exploration Randomization Boost: +{random_boost:.2f}")
 
         if x_progress > 0:
-            # Reward for moving right
-            shaped_reward += 0.2 * x_progress
+            shaped_reward += 0.5 * x_progress
             self.stuck_counter = 0
         else:
-            # Small penalty for not moving forward
-            shaped_reward -= 0.01
+            shaped_reward -= 0.05
             self.stuck_counter += 1
 
         # Check for passing checkpoints
@@ -1528,9 +1721,9 @@ def plot_metrics(save_dir, metrics):
 # ============================
 
 
-def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
-          action_type="simple", eval_interval=50, use_amp=True):
-    """Train the Mario agent with GPU optimizations"""
+def train(num_episodes=1000, render=False, save_every=20, checkpoint_path=None,
+          action_type="simple", eval_interval=50, use_amp=True, loaded_agent=None):
+
     # Create save directory
     save_dir = Path("mario_checkpoints") / \
         datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -1544,19 +1737,25 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
     eval_env, _ = make_env(action_type)
     eval_wrapped_env = EnhancedMarioEnv(eval_env)
 
-    # Create agent with optimized parameters
-    agent = MarioAgent(
-        input_channels=4,
-        action_count=action_count,
-        save_dir=save_dir,
-        batch_size=INCREASED_BATCH_SIZE,  # Increased batch size
-        memory_size=150000,  # Larger replay buffer
-        lr=3e-4   # Slightly adjusted learning rate
-    )
+    # Use provided agent or create a new one
+    if loaded_agent is not None:
+        agent = loaded_agent
+        # Make sure agent uses the correct save directory
+        agent.save_dir = save_dir
+    else:
+        # Create agent with optimized parameters
+        agent = MarioAgent(
+            input_channels=4,
+            action_count=action_count,
+            save_dir=save_dir,
+            batch_size=INCREASED_BATCH_SIZE,
+            memory_size=150000,
+            lr=3e-4
+        )
 
-    # Load checkpoint if provided
-    if checkpoint_path:
-        agent.load(checkpoint_path)
+        # Load checkpoint if provided
+        if checkpoint_path:
+            agent.load(checkpoint_path)
 
     # Initialize metrics tracking
     metrics = {
@@ -1602,43 +1801,22 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
         encoded_state = encode_state(state)
         preloaded_states.append((state, encoded_state))
 
-    # Create environment worker for background frame processing
-    from concurrent.futures import ThreadPoolExecutor
-    executor = ThreadPoolExecutor(max_workers=2)
-
     # Training loop
     print("Starting training with GPU optimizations...")
     try:
         for episode in range(num_episodes):
-            last_checkpoint_path = None
-
-            # Track episode start time
             start_time = time.time()
 
-            # Get a pre-processed state or reset the environment
-            if preloaded_states:
-                state, encoded_state = preloaded_states.pop(0)
-            else:
-                state = wrapped_env.reset()
-                encoded_state = encode_state(state)
-
-            # Queue up a new environment reset in the background
-            if len(preloaded_states) < preload_batch_size:
-                executor.submit(lambda: preloaded_states.append(
-                    (wrapped_env.reset(), encode_state(wrapped_env.reset()))))
-
-            # Episode tracking
+            # Reset environment
+            state = wrapped_env.reset()
+            done = False
             total_reward = 0
             episode_loss = []
             episode_q = []
             step_times = []
             frame_count = 0
 
-            done = False
-
-            step_buffer = []
-            buffer_size = 4
-
+            # Episode loop
             while not done:
                 # Record start time for FPS calculation
                 step_start = time.time()
@@ -1647,39 +1825,26 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
                 action = agent.act(state)
                 next_state, reward, done, info = safe_step(wrapped_env, action)
 
-                # Update running total reward immediately
+                # Cache experience
+                agent.cache(state, next_state, action, reward, done, info)
+
+                # Update tracking variables
                 total_reward += reward
                 frame_count += 1
 
-                # Add to buffer
-                step_buffer.append(
-                    (state, next_state, action, reward, done, info))
+                # Render if enabled
+                if render and episode % 10 == 0 and agent.curr_step % 20 == 0:
+                    wrapped_env.render()
 
-                # Process buffer when full or episode ends
-                if len(step_buffer) >= buffer_size or done:
-                    # Process all buffered steps at once for efficiency
-                    for s, ns, a, r, d, i in step_buffer:
-                        agent.cache(s, ns, a, r, d, i)
+                # Learn from experience
+                if agent.curr_step % 4 == 0:
+                    with torch.cuda.amp.autocast() if use_amp else nullcontext():
+                        learn_result = agent.learn()
 
-                    # Clear buffer
-                    step_buffer = []
-
-                    # Render if enabled - reduced frequency
-                    if render and episode % 10 == 0 and agent.curr_step % 20 == 0:
-                        wrapped_env.render()
-
-                    # Learn from experience with AMP if enabled - only do this once per buffer
-                    if agent.curr_step % 4 == 0:  # Reduced from every 2 steps to every 4
-                        if use_amp:
-                            with torch.cuda.amp.autocast():
-                                learn_result = agent.learn()
-                        else:
-                            learn_result = agent.learn()
-
-                        if learn_result:
-                            loss, q_value = learn_result
-                            episode_loss.append(loss)
-                            episode_q.append(q_value)
+                    if learn_result:
+                        loss, q_value = learn_result
+                        episode_loss.append(loss)
+                        episode_q.append(q_value)
 
                 # Update state for next step
                 state = next_state
@@ -1688,7 +1853,7 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
                 step_time = time.time() - step_start
                 step_times.append(step_time)
 
-                # Calculate and log FPS periodically
+                # Log FPS periodically
                 if len(step_times) >= 200:
                     avg_step_time = sum(step_times) / len(step_times)
                     fps = 1.0 / avg_step_time if avg_step_time > 0 else 0
@@ -1698,14 +1863,9 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
                     print(f"Episode {episode}, Step {agent.curr_step}: FPS={fps:.1f}, "
                           f"Exploration={agent.exploration_rate:.3f}")
 
-                # Run very infrequent memory management
+                # Memory management
                 if agent.curr_step % 3000 == 0:
                     torch.cuda.empty_cache()
-
-            # After episode is done, ensure we reset the environment before the next episode
-            if episode < num_episodes - 1:  # If not the last episode
-                # Reset environment for next episode
-                wrapped_env.reset()
 
             # Episode complete - gather metrics
             episode_time = time.time() - start_time
@@ -1741,8 +1901,20 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
             avg_fps = sum(recent_fps) / len(recent_fps) if recent_fps else 0
 
             agent.update_exploration_rate(episode)
-
             agent.periodic_exploration_reset(episode)
+
+            # Log to tensorboard and other metric tracking
+            # ... existing logging code ...
+
+            # Print episode summary
+            print(f"Episode {episode}/{num_episodes}: "
+                  f"Reward={total_reward:.2f}, "
+                  f"Distance={x_distance}, "
+                  f"Steps={episode_length}, "
+                  f"{'WIN!' if flag_get else 'Loss'}, "
+                  f"FPS={episode_fps:.1f}, "
+                  f"Epsilon={agent.exploration_rate:.4f}, "
+                  f"Time={episode_time:.2f}s")
 
             # Log to tensorboard
             agent.writer.add_scalar('Episode/reward', total_reward, episode)
@@ -1760,26 +1932,12 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
             # Adjust learning rate based on performance
             agent.adjust_learning_rate(avg_reward_100)
 
-            # Print episode summary with performance metrics
-            print(f"Episode {episode}/{num_episodes}: "
-                  f"Reward={total_reward:.2f}, "
-                  f"Distance={x_distance}, "
-                  f"Steps={episode_length}, "
-                  f"{'WIN!' if flag_get else 'Loss'}, "
-                  f"FPS={episode_fps:.1f}, "
-                  f"Epsilon={agent.exploration_rate:.4f}, "
-                  f"Time={episode_time:.2f}s")
-
             # Print memory usage every 10 episodes
             if episode % 10 == 0:
                 allocated_mb = torch.cuda.memory_allocated(0)/1024**2
                 reserved_mb = torch.cuda.memory_reserved(0)/1024**2
                 print(f"GPU memory: {allocated_mb:.2f} MB allocated, "
                       f"{reserved_mb:.2f} MB reserved")
-
-                # Get memory by category - helps identify memory leaks
-                print(f"GPU memory: {torch.cuda.memory_allocated(0)/1024**2:.2f} MB allocated, "
-                      f"{torch.cuda.memory_reserved(0)/1024**2:.2f} MB reserved")
 
             # Evaluate periodically
             if episode % eval_interval == 0 or episode == num_episodes - 1 or flag_get:
@@ -1796,18 +1954,14 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
                 agent.save(episode)
 
                 # Plot metrics after evaluation
-                plot_metrics(
-                    save_dir=save_dir,
-                    metrics=metrics
-                )
+                plot_metrics(save_dir=save_dir, metrics=metrics)
 
             # Save periodically or on significant achievements
             if episode % save_every == 0 or flag_get or (episode > 0 and total_reward > max(metrics['rewards'][:-1], default=0) * 1.2):
                 agent.save(episode)
 
-            # With this more optimized approach:
-            # Run minimal garbage collection only when needed (much less frequently)
-            if episode % 35 == 0:  # Reduced from every 10 episodes to every 50
+            # Run minimal garbage collection only when needed
+            if episode % 35 == 0:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -1822,13 +1976,67 @@ def train(num_episodes=1000, render=True, save_every=20, checkpoint_path=None,
     wrapped_env.close()
     eval_wrapped_env.close()
     agent.writer.close()
-    executor.shutdown()
 
     print("Training complete!")
 
     # Save final metrics
     with open(save_dir / 'final_metrics.pkl', 'wb') as f:
         pickle.dump(metrics, f)
+
+    return metrics
+
+
+def continue_from_checkpoint(checkpoint_path, num_episodes=500, focus_on_final_pipe=True, render=False):
+    """Resume training from checkpoint with focus on final pipe section"""
+
+    # Create save directory with current timestamp
+    save_dir = Path("mario_checkpoints") / \
+        datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create environments
+    env, action_count = make_env("simple")
+    wrapped_env = EnhancedMarioEnv(env)
+
+    # Create evaluation environment
+    eval_env, _ = make_env("simple")
+    eval_wrapped_env = EnhancedMarioEnv(eval_env)
+
+    # Create agent with optimized parameters
+    agent = MarioAgent(
+        input_channels=4,
+        action_count=action_count,
+        save_dir=save_dir,
+        batch_size=INCREASED_BATCH_SIZE,
+        memory_size=200000,  # Increased memory size for better retention
+        lr=2e-4   # Slightly lower learning rate for fine-tuning
+    )
+
+    agent.load(checkpoint_path)
+
+    curr_step = agent.curr_step
+
+    if focus_on_final_pipe:
+        agent.success_memory["722"] = deque(maxlen=2000)  # Increased from 1000
+        agent.success_memory["898"] = deque(maxlen=3000)  # Increased from 750
+
+        agent.exploration_rate = max(0.15, agent.exploration_rate * 0.9)
+        print(
+            f"Adjusted exploration rate to {agent.exploration_rate:.4f} for final pipe focus")
+
+        print(
+            f"Continuing training from step {curr_step} with focus on final pipe")
+
+    metrics = train(
+        num_episodes=num_episodes,
+        render=render,
+        save_every=20,
+        checkpoint_path=None,
+        action_type="simple",
+        eval_interval=25,
+        use_amp=True,
+        loaded_agent=agent
+    )
 
     return metrics
 
@@ -1855,7 +2063,7 @@ def evaluate_agent(agent, env, num_eval_episodes=5, render=False):
             total_reward = 0
 
             # Create frame buffer to skip frames during evaluation (speeds it up)
-            frame_skip = 3  # Can be increased to speed up evaluation
+            frame_skip = 2  # Can be increased to speed up evaluation
             frame_counter = 0
 
             # For measuring fps during evaluation
@@ -1925,8 +2133,6 @@ def evaluate_agent(agent, env, num_eval_episodes=5, render=False):
     return avg_score
 
 
-# Import for nullcontext when not using AMP
-
 # ============================
 # 8. Enhanced Main Function
 # ============================
@@ -1937,8 +2143,8 @@ if __name__ == "__main__":
         description='Train Mario agent with Dueling DQN and GPU optimizations')
     parser.add_argument('--episodes', type=int, default=500,
                         help='Number of episodes to train')
-    parser.add_argument('--no-render', action='store_true',
-                        help='Disable rendering')
+    parser.add_argument('--render', action='store_true',
+                        help='Enable rendering')  # Changed from no-render to render
     parser.add_argument('--save-every', type=int, default=20,
                         help='Save model every N episodes')
     parser.add_argument('--checkpoint', type=str,
@@ -1951,6 +2157,8 @@ if __name__ == "__main__":
                         help='Disable automatic mixed precision')
     parser.add_argument('--reserve-memory', type=int, default=10,
                         help='Amount of VRAM to reserve in GB')
+    parser.add_argument('--continue-focused', action='store_true',
+                        help='Continue from checkpoint with focus on final pipe')
 
     args = parser.parse_args()
 
@@ -1981,12 +2189,22 @@ if __name__ == "__main__":
         print(f"Memory allocated: {allocated_gb:.2f} GB")
         print(f"Memory reserved: {reserved_gb_actual:.2f} GB")
 
-    train(
-        num_episodes=args.episodes,
-        render=not args.no_render,
-        save_every=50,
-        checkpoint_path=args.checkpoint,
-        action_type=args.action_type,
-        eval_interval=args.eval_interval,
-        use_amp=not args.no_amp
-    )
+    if args.continue_focused and args.checkpoint:
+        # Use the focused continuation approach
+        continue_from_checkpoint(
+            checkpoint_path=args.checkpoint,
+            num_episodes=args.episodes,
+            focus_on_final_pipe=True,
+            render=args.render  # Pass the render argument
+        )
+    else:
+        # Regular training
+        train(
+            num_episodes=args.episodes,
+            render=args.render,  # Changed from not args.no_render to args.render
+            save_every=50,
+            checkpoint_path=args.checkpoint,
+            action_type=args.action_type,
+            eval_interval=args.eval_interval,
+            use_amp=not args.no_amp
+        )
