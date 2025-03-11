@@ -28,12 +28,37 @@ class MarioTrainer:
                  checkpoint_dir='checkpoints',
                  models_dir='models',
                  use_custom_rewards=True,
-                 device=None):
+                 device=None,
+                 gpu_memory_fraction=0.8):
 
         # Set up device
         self.device = device if device else (
             'cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
+
+        if self.device == 'cuda':
+            # More precise GPU memory management
+            import os
+            # Set environment variable to limit memory growth
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.8'
+
+            # Optional: Use a fraction of available memory instead of a fixed size
+            memory_fraction = 0.8  # Use 80% of available GPU memory
+            total_memory = torch.cuda.get_device_properties(0).total_memory
+            allocated_memory = int(total_memory * memory_fraction)
+
+            print(f"Limiting GPU memory usage to {allocated_memory / (1024**3):.2f} GB "
+                  f"({memory_fraction*100:.0f}% of available {total_memory / (1024**3):.2f} GB)")
+
+            # Create a cache tensor to occupy space and prevent other processes from using it
+            cache_tensor = torch.zeros((allocated_memory // 4,),
+                                       dtype=torch.float32,
+                                       device='cuda')
+            # Keep a reference to the tensor to prevent it from being garbage collected
+            self.cache_tensor = cache_tensor
+
+            torch.backends.cudnn.benchmark = True
+            print("CUDNN benchmark enabled for faster training")
 
         # Set up directories
         self.checkpoint_dir = checkpoint_dir
@@ -67,8 +92,8 @@ class MarioTrainer:
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=0.00025)
 
         # Training parameters
-        self.batch_size = 32
-        self.gamma = 0.99  # Discount factor
+        self.batch_size = 128
+        self.gamma = 0.99
         self.eps_start = 1.0
         self.eps_end = 0.15
         self.eps_decay = 50000
@@ -120,6 +145,23 @@ class MarioTrainer:
 
         # Sample batch from memory
         transitions = random.sample(self.memory, self.batch_size)
+
+        # Process batches more efficiently
+        with torch.no_grad():  # Don't track gradients when preparing batches
+            # Transpose batch
+            batch = list(zip(*transitions))
+
+            # Convert to tensors in a memory-efficient way
+            states = torch.FloatTensor(
+                np.array(batch[0], copy=False)).to(self.device)
+            actions = torch.LongTensor(
+                np.array(batch[1], copy=False)).view(-1, 1).to(self.device)
+            next_states = torch.FloatTensor(
+                np.array(batch[2], copy=False)).to(self.device)
+            rewards = torch.FloatTensor(
+                np.array(batch[3], copy=False)).view(-1, 1).to(self.device)
+            dones = torch.BoolTensor(
+                np.array(batch[4], copy=False)).view(-1, 1).to(self.device)
 
         # Transpose batch (see https://stackoverflow.com/a/19343/3343043)
         batch = list(zip(*transitions))
@@ -173,17 +215,28 @@ class MarioTrainer:
 
     def train(self, num_episodes=1000, render=False, save_interval=10):
         """Train the agent"""
+        print("Starting training loop...")
+
         for episode in range(1, num_episodes + 1):
             self.episode = episode
+            print(f"Starting episode {episode}...")
 
             # Reset environment
+            print("Resetting environment...")
+            start_time = time.time()
             state = self.env.reset()
             state = arrange(state)
+            print(
+                f"Environment reset took {time.time() - start_time:.2f} seconds")
 
             done = False
             total_reward = 0
             max_distance = 0
             steps = 0
+
+            # Run episode
+            print("Running episode...")
+            episode_start_time = time.time()
 
             # Run episode
             while not done:
@@ -198,6 +251,10 @@ class MarioTrainer:
                 # Update max distance
                 max_distance = max(max_distance, info.get('x_pos', 0))
 
+                distance_log = []  # To track distance over time
+
+                distance_log.append((steps, info.get('x_pos', 0)))
+
                 # Save transition to memory
                 self.push_memory(state, action, next_state, reward, done)
 
@@ -205,19 +262,39 @@ class MarioTrainer:
                 state = next_state
 
                 # Perform optimization step
-                self.optimize_model()
+                if steps % 4 == 0:
+                    optimize_start = time.time()
+                    self.optimize_model()
+                    if steps % 100 == 0:
+                        print(
+                            f"Optimization step took {time.time() - optimize_start:.4f} seconds")
 
                 total_reward += reward
                 steps += 1
 
-                # Break if episode runs too long
-                if steps > 10000:
-                    print("Episode running too long. Breaking.")
-                    break
+                # Print periodic status during long episodes
+                if steps % 500 == 0:
+                    print(
+                        f"Episode {episode} in progress: {steps} steps, current distance: {info.get('x_pos', 0)}, current reward: {total_reward:.2f}")
+
+                if steps % 10000 == 0:
+                    # Force garbage collection to free memory
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
             # Record metrics
             self.scores.append(total_reward)
             self.max_distances.append(max_distance)
+
+            if len(distance_log) > 1:
+                print(
+                    f"Distance progression: Start={distance_log[0][1]}, End={distance_log[-1][1]}, Max={max_distance}")
+                # Optionally print intermediate checkpoints at 25%, 50%, 75% of the episode
+                if len(distance_log) >= 4:
+                    quarter_idx = len(distance_log) // 4
+                    print(
+                        f"Distance checkpoints: 25%={distance_log[quarter_idx][1]}, 50%={distance_log[2*quarter_idx][1]}, 75%={distance_log[3*quarter_idx][1]}")
 
             # Calculate average score
             avg_score = np.mean(
@@ -336,6 +413,15 @@ class MarioTrainer:
         plt.grid(True, alpha=0.3)
 
         plt.tight_layout()
+
+        if hasattr(self, 'distance_log') and self.distance_log:
+            plt.subplot(2, 2, 3)
+            steps, distances = zip(*self.distance_log)
+            plt.plot(steps, distances)
+            plt.title('Distance Progression (Latest Episode)')
+            plt.xlabel('Steps')
+            plt.ylabel('Distance')
+            plt.grid(True, alpha=0.3)
 
         if save_path:
             plt.savefig(save_path)
