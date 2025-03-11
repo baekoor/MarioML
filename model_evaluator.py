@@ -21,7 +21,7 @@ from wrappers import wrap_mario
 def load_model(model_path, device):
     """Robust model loading function"""
     # Set up network
-    env = gym_super_mario_bros.make('SuperMarioBros-v3')
+    env = gym_super_mario_bros.make('SuperMarioBros-v2')
     env = JoypadSpace(env, COMPLEX_MOVEMENT)
     env = wrap_mario(env)
 
@@ -99,7 +99,7 @@ def evaluate_model(model_path, render=True, max_episodes=None, exploration_rate=
                    save_stats=False, stats_dir="evaluation_stats"):
     """Evaluate the model with detailed statistics"""
     # Set up device
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
     print(f"Using device: {device}")
 
     # Create stats directory if saving stats
