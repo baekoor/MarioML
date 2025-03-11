@@ -1,0 +1,3 @@
+Evaluation of model: models/initial_run_best.pth
+Date: 2025-03-10 23:49:23
+
