@@ -5,11 +5,9 @@ import cv2
 import gym
 from gym import spaces
 from gym.wrappers import TimeLimit
-
-# Import the custom reward wrapper
 from MarioProgressRewardEnv import customRewardWrapper, MarioProgressRewardEnv
 
-# Disable OpenCL for better compatibility
+
 cv2.ocl.setUseOpenCL(False)
 
 
