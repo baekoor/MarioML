@@ -1,8 +1,7 @@
-# super-mario-bros-reinforcement-learning
+# MARIOML
 
-The pre-trained models are located under `./models`. To run these models run `./ppo-play.ipynb`.
-
-To train a new model run `./ppo-train.ipynb`.
+The pre-trained models are located under `./models`. To run these models use `./ppo-play.ipynb`.
+To train a new model use `./ppo-train.ipynb`.
 
 ## Requirements (tested)
 
@@ -35,14 +34,13 @@ To keep it simple, each element is given an integer value:
 –1: Enemy
 This works well for World 1-1, though later levels with different enemy types might cause issues.
 Observation Wrapper and Frame Stacking:
-The RAM reading function is wrapped in an ObservationWrapper that also stacks a sequence of recent frames (of shape (13, 16, n_stack)) to provide temporal context. (I wrote a custom frame stack instead of using SB3’s VecFrameStack since it didn’t work well with my environment.)
+The RAM reading function is wrapped in an ObservationWrapper that also stacks a sequence of recent frames (of shape (13, 16, n_stack)) to provide temporal context.
 
 Why Use the RAM Grid Instead of Pixels?
 
-Efficiency: Processing raw pixel images would require deep convolutional networks, which are computationally expensive—especially on a machine like an M1 MacBook Air. Cropping and downsampling didn’t sufficiently reduce the cost or improve learning.
+Efficiency: Processing raw pixel images would require deep convolutional networks, which are computationally expensive—especially.
 Focus on Game Mechanics: Using the RAM grid lets the agent learn the game’s rules and level layout directly, similar to how an experienced player might ignore visual details that are irrelevant for gameplay.
-Reward Function:
-The default reward is based on how far Mario travels, adjusted by the time taken and penalizing deaths. Changing the reward function would add extra complexity.
+Reward Function: The default reward is based on how far Mario travels, adjusted by the time taken and penalizing deaths. Changing the reward function would add extra complexity.
 
 Training & Results
-Trained a PPO agent with SB3’s MlpPolicy (using two Dense(64) layers) and default hyperparameters, along with a linear learning rate scheduler that decreases the rate to 0 over time. This scheduler improved training stability. Each model was trained for 10 million steps, taking about 4.5 hours to complete.
+Trained a PPO agent with SB3’s MlpPolicy (using two Dense(64) layers) and default hyperparameters, along with a linear learning rate scheduler that decreases the rate to 0 over time. Each model was trained for 10 million steps, taking about 4.5 hours to complete.
