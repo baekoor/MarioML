@@ -65,6 +65,7 @@ class SMBWithRandomness:
             if render:
                 while not done:
                     self.env.render()
+
                     action, _ = self.model.predict(
                         states, deterministic=deterministic)
                     action_source = "model"
@@ -111,7 +112,7 @@ class SMBWithRandomness:
             return action_history
 
 
-def run_mario_ai(model_name='best_model_6300000', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4,
+def run_mario_ai(model_name='best_model_8100000', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4,
                  render=True, deterministic=True, random_chance=0.05, delay_between_episodes=1.0):
     """
     Run the Mario AI model in a continuous loop until manually stopped
@@ -204,9 +205,9 @@ if __name__ == "__main__":
     keyboard_thread.start()
 
     # Process command line arguments
-    model_name = 'best_model_6300000'
-    deterministic_mode = True  # Base model is deterministic
-    random_chance = 0.05       # Default 5% randomness
+    model_name = 'best_model_8100000'
+    deterministic_mode = True
+    random_chance = 0.02       # Default 5% randomness
 
     if len(sys.argv) > 1:
         model_name = sys.argv[1]
@@ -223,14 +224,14 @@ if __name__ == "__main__":
 
     # Different model configurations
     model_configs = {
-        'pre-trained-1': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
-        'best_model_6300000': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
+        'best_model_8100000': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
+        'pre-trained-2': {'crop_dim': [0, 16, 0, 13], 'n_stack': 1, 'n_skip': 4},
         'pre-trained-3': {'crop_dim': [0, 16, 0, 13], 'n_stack': 2, 'n_skip': 4},
     }
 
     # Get model config or use default
     config = model_configs.get(
-        model_name, model_configs['best_model_6300000'])
+        model_name, model_configs['best_model_8100000'])
 
     # Run the AI
     run_mario_ai(
