@@ -65,17 +65,9 @@ class SMBWithRandomness:
             if render:
                 while not done:
                     self.env.render()
-
-                    # Add controlled randomness
-                    if random.random() < self.random_chance:
-                        # Take a random action 5% of the time
-                        action = [self.action_space.sample()]
-                        action_source = "random"
-                    else:
-                        # Otherwise use the model's prediction
-                        action, _ = self.model.predict(
-                            states, deterministic=deterministic)
-                        action_source = "model"
+                    action, _ = self.model.predict(
+                        states, deterministic=deterministic)
+                    action_source = "model"
 
                     # Track action for statistics
                     action_key = f"{action[0]}"
@@ -119,13 +111,13 @@ class SMBWithRandomness:
             return action_history
 
 
-def run_mario_ai(model_name='best_model_1600000', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4,
+def run_mario_ai(model_name='best_model_6300000', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4,
                  render=True, deterministic=True, random_chance=0.05, delay_between_episodes=1.0):
     """
     Run the Mario AI model in a continuous loop until manually stopped
     """
     MODEL_DIR = './models/v1'
-    version = 'SuperMarioBros-1-1-v0'
+    version = 'SuperMarioBros-1-1-v1'
     episode_count = 0
     total_reward = 0
     total_steps = 0
@@ -212,7 +204,7 @@ if __name__ == "__main__":
     keyboard_thread.start()
 
     # Process command line arguments
-    model_name = 'best_model_1000000'
+    model_name = 'best_model_6300000'
     deterministic_mode = True  # Base model is deterministic
     random_chance = 0.05       # Default 5% randomness
 
@@ -232,12 +224,13 @@ if __name__ == "__main__":
     # Different model configurations
     model_configs = {
         'pre-trained-1': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
-        'best_model_1000000': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
+        'best_model_6300000': {'crop_dim': [0, 16, 0, 13], 'n_stack': 4, 'n_skip': 4},
         'pre-trained-3': {'crop_dim': [0, 16, 0, 13], 'n_stack': 2, 'n_skip': 4},
     }
 
     # Get model config or use default
-    config = model_configs.get(model_name, model_configs['best_model_1000000'])
+    config = model_configs.get(
+        model_name, model_configs['best_model_6300000'])
 
     # Run the AI
     run_mario_ai(
