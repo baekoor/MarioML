@@ -19,6 +19,7 @@ To train a new model use `./ppo-train.ipynb`.
 This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./smb_utils.py and check out the references in ./ppo-train.ipynb.
 
 --------- Features ---------
+
 Tile Grid:
 The game tiles (blocks, items, pipes, etc.) are stored in memory as a 32×13 grid (effectively two 16×13 grids). The displayed screen is a 16×13 portion that scrolls through this grid. Each tile represents a 16×16 pixel area, and the full rendered screen is 256×240 pixels (including areas like score display that aren’t in the RAM grid).
 

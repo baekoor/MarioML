@@ -15,7 +15,7 @@ from nes_py.wrappers import JoypadSpace
 class SMBGrid:
     def __init__(self, env):
         self.ram = env.unwrapped.ram
-        self.screen_size_x = 16     # rendered screen size
+        self.screen_size_x = 16
         self.screen_size_y = 13
 
         self.mario_level_x = self.ram[0x6d]*256 + self.ram[0x86]

@@ -1,4 +1,3 @@
-# Import dependencies
 import gym
 import torch
 import numpy as np
@@ -15,13 +14,13 @@ from nes_py.wrappers import JoypadSpace
 class SMBGrid:
     def __init__(self, env):
         self.ram = env.unwrapped.ram
-        self.screen_size_x = 16     # rendered screen size
+        self.screen_size_x = 16
         self.screen_size_y = 13
 
         self.mario_level_x = self.ram[0x6d]*256 + self.ram[0x86]
-        # mario's position on the rendered screen
+        # Mario X pos
         self.mario_x = self.ram[0x3ad]
-        self.mario_y = self.ram[0x3b8] + 16  # top edge of (big) mario
+        self.mario_y = self.ram[0x3b8] + 16
 
         # left edge pixel of the rendered screen in level
         self.x_start = self.mario_level_x - self.mario_x
@@ -113,12 +112,12 @@ class SMBRamWrapper(gym.ObservationWrapper):
 
     def observation(self, obs):
         grid = SMBGrid(self.env)
-        frame = grid.rendered_screen  # 2d array
+        frame = grid.rendered_screen
         frame = self.crop_obs(frame)
 
         self.frame_stack[:, :, 1:] = self.frame_stack[:,
-                                                      :, :-1]  # shift frame_stack by 1
-        self.frame_stack[:, :, 0] = frame  # add current frame to stack
+                                                      :, :-1]
+        self.frame_stack[:, :, 0] = frame
         obs = self.frame_stack[:, :, ::self.n_skip]
         return obs
 
@@ -127,7 +126,7 @@ class SMBRamWrapper(gym.ObservationWrapper):
         self.frame_stack = np.zeros(
             (self.height, self.width, (self.n_stack-1)*self.n_skip+1))
         grid = SMBGrid(self.env)
-        frame = grid.rendered_screen  # 2d array
+        frame = grid.rendered_screen
         frame = self.crop_obs(frame)
         for i in range(self.frame_stack.shape[-1]):
             self.frame_stack[:, :, i] = frame
@@ -202,8 +201,8 @@ class SMB:
         else:
             return
 
-# === Main Program Function ===
 
+# === Main Program Function ===
 
 def load_and_play_mario(model_name='pre-trained-1', episodes=1):
     """
