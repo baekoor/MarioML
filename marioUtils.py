@@ -11,18 +11,17 @@ from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from nes_py.wrappers import JoypadSpace
 
 
-class SMBGrid:
+class MarioGrid:
     def __init__(self, env):
         self.ram = env.unwrapped.ram
         self.screen_size_x = 16
         self.screen_size_y = 13
 
-        self.mario_level_x = self.ram[0x6d]*256 + self.ram[0x86]
         # Mario X pos
         self.mario_x = self.ram[0x3ad]
         self.mario_y = self.ram[0x3b8] + 16
+        self.mario_level_x = self.ram[0x6d]*256 + self.ram[0x86]
 
-        # left edge pixel of the rendered screen in level
         self.x_start = self.mario_level_x - self.mario_x
         self.rendered_screen = self.get_rendered_screen()
 
@@ -89,7 +88,7 @@ class SMBGrid:
 # Reimplemented wrapper without external dependencies
 
 
-class SMBRamWrapper(gym.ObservationWrapper):
+class RamWrapper(gym.ObservationWrapper):
     def __init__(self, env, crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=2):
         '''
         crop_dim: [x0, x1, y0, y1]
@@ -111,7 +110,7 @@ class SMBRamWrapper(gym.ObservationWrapper):
             (self.height, self.width, (self.n_stack-1)*self.n_skip+1))
 
     def observation(self, obs):
-        grid = SMBGrid(self.env)
+        grid = MarioGrid(self.env)
         frame = grid.rendered_screen
         frame = self.crop_obs(frame)
 
@@ -125,7 +124,7 @@ class SMBRamWrapper(gym.ObservationWrapper):
         obs = self.env.reset()
         self.frame_stack = np.zeros(
             (self.height, self.width, (self.n_stack-1)*self.n_skip+1))
-        grid = SMBGrid(self.env)
+        grid = MarioGrid(self.env)
         frame = grid.rendered_screen
         frame = self.crop_obs(frame)
         for i in range(self.frame_stack.shape[-1]):
@@ -145,21 +144,21 @@ class SMBRamWrapper(gym.ObservationWrapper):
 # Load environment function
 
 
-def load_smb_env(name='SuperMarioBros-1-1-v1', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4):
+def load_env(name='SuperMarioBros-1-1-v1', crop_dim=[0, 16, 0, 13], n_stack=4, n_skip=4):
     '''
     Wrapper function for loading and processing smb env
     '''
     env = gym_super_mario_bros.make(name)
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    env_wrap = SMBRamWrapper(env, crop_dim, n_stack=n_stack, n_skip=n_skip)
+    env_wrap = RamWrapper(env, crop_dim, n_stack=n_stack, n_skip=n_skip)
     env_wrap = DummyVecEnv([lambda: env_wrap])
 
     return env_wrap
 
-# Custom SMB class for model interaction
+# Custom Mario utils class for model interaction
 
 
-class SMB:
+class MarioUtils:
     '''
     Wrapper function containing the processed environment and the loaded model
     '''
@@ -215,7 +214,7 @@ def load_and_play_mario(model_name='pre-trained-1', episodes=1):
 
     # Load the environment
     print("Loading environment...")
-    env_wrap = load_smb_env('SuperMarioBros-1-1-v1', crop_dim, n_stack, n_skip)
+    env_wrap = load_env('SuperMarioBros-1-1-v1', crop_dim, n_stack, n_skip)
 
     # Create a custom model using direct policy loading
     print(f"Loading model {model_name}...")
@@ -279,18 +278,16 @@ def load_and_play_mario(model_name='pre-trained-1', episodes=1):
                 verbose=1
             )
 
-    # Create SMB instance and play
     print("Starting gameplay...")
-    smb = SMB(env_wrap, model)
-    score, info = smb.play(
+    mario_utils = MarioUtils(env_wrap, model)
+    score, info = mario_utils.play(
         episodes=episodes, deterministic=True, render=True, return_eval=True)
 
     print(f"Final score: {score}")
     print(f"Game info: {info}")
 
-    return smb
+    return mario_utils
 
 
-# You can call this function to run the game
 if __name__ == "__main__":
-    smb = load_and_play_mario(model_name='pre-trained-1', episodes=1)
+    mario_utils = load_and_play_mario(model_name='pre-trained-1', episodes=1)

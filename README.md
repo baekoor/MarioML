@@ -16,7 +16,7 @@ To train a new model use `./ppo-train.ipynb`.
 
     pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
 
-This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./smb_utils.py and check out the references in ./ppo-train.ipynb.
+This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./mario_utils.py and check out the references in ./ppo-train.ipynb.
 
 --------- Features ---------
 

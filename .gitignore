@@ -32,8 +32,6 @@ share/python-wheels/
 
 # Venv
 venv
-
-logs/*
 models/*
 
 # Checkpoints

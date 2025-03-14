@@ -7,7 +7,7 @@ import keyboard
 import threading
 import numpy as np
 from stable_baselines3 import PPO
-from gym_utils import load_smb_env, SMB
+from gymUtils import load_env, SMB
 
 
 def signal_handler(sig, frame):
@@ -109,7 +109,7 @@ class SMBWithRandomness:
             return action_history
 
 
-def run_mario_ai(model_name='best_model_9500000', random_chance=0.05, delay_between_episodes=1.0):
+def run_mario_ai(model_name='best_model_10000000', random_chance=0.05, delay_between_episodes=1.0):
     """
     Run the Mario AI model in a continuous loop until manually stopped
     """
@@ -119,7 +119,7 @@ def run_mario_ai(model_name='best_model_9500000', random_chance=0.05, delay_betw
     render = True
     deterministic = True
 
-    MODEL_DIR = './models/v3/'
+    MODEL_DIR = './'
     version = 'SuperMarioBros-1-1-v1'
     episode_count = 0
     total_reward = 0
@@ -133,7 +133,7 @@ def run_mario_ai(model_name='best_model_9500000', random_chance=0.05, delay_betw
 
     print("Loading environment...")
     global env_wrap
-    env_wrap = load_smb_env(version, crop_dim, n_stack, n_skip)
+    env_wrap = load_env(version, crop_dim, n_stack, n_skip)
     print("Environment loaded successfully")
 
     try:
@@ -196,8 +196,8 @@ if __name__ == "__main__":
     keyboard_thread.daemon = True
     keyboard_thread.start()
 
-    model_name = 'best_model_9500000'
-    random_chance = 0.05
+    model_name = 'marioV1'
+    random_chance = 0.02
 
     if len(sys.argv) > 1:
         model_name = sys.argv[1]
