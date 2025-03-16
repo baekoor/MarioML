@@ -279,15 +279,15 @@ def load_and_play_mario(model_name='pre-trained-1', episodes=1):
             )
 
     print("Starting gameplay...")
-    mario_utils = MarioUtils(env_wrap, model)
-    score, info = mario_utils.play(
+    marioUtils = MarioUtils(env_wrap, model)
+    score, info = marioUtils.play(
         episodes=episodes, deterministic=True, render=True, return_eval=True)
 
     print(f"Final score: {score}")
     print(f"Game info: {info}")
 
-    return mario_utils
+    return marioUtils
 
 
 if __name__ == "__main__":
-    mario_utils = load_and_play_mario(model_name='pre-trained-1', episodes=1)
+    marioUtils = load_and_play_mario(model_name='pre-trained-1', episodes=1)
