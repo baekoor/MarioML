@@ -1,98 +1,47 @@
-Mario DQN - Teaching an AI to Play Super Mario Bros
-A Deep Q-Network (DQN) implementation that teaches an AI agent to play Super Mario Bros using PyTorch and reinforcement learning.
-Features
+# MARIOML
 
-Dueling DQN Architecture: Superior learning performance with separate value and advantage streams
-GPU Optimization: CUDA acceleration with memory management for faster training
-Advanced Reward Shaping: Custom incentives for game progression and obstacle clearing
-Visualization: TensorBoard integration and automatic performance graphs
-Progress Tracking: Periodic evaluation and checkpointing
-Breakthrough Detection: Special reward boosting for difficult level sections
+The pre-trained models are located under `./models`. To run these models use `./ppo-play.ipynb`.
+To train a new model use `./ppo-train.ipynb`.
 
-Requirements
+## Requirements (tested)
 
-Python 3.7+
-PyTorch 1.13.1 with CUDA support (recommended)
-NES-Py and gym-super-mario-bros
-CUDA-compatible GPU
+    | Module               | Version |
+    | -------------------- | ------- |
+    | gym                  | 0.21.0  |
+    | gym-super-mario-bros | 7.3.0   |
+    | nes-py               | 8.2.1   |
+    | pyglet               | 1.5.21  |
+    | stable-baselines3    | 1.5.0   |
+    | torch                | 1.11.1  |
 
-Quick Start
-Installation
-bashCopy# Setup virtual environment
-python -m venv .venv
-source .venv/bin/activate # On Windows: .venv\Scripts\activate
+    pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
 
-# Install dependencies
+This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./mario_utils.py and check out the references in ./ppo-train.ipynb.
 
-pip install torch==1.13.1 torchvision==0.14.1 --extra-index-url https://download.pytorch.org/whl/cu116
-pip install numpy==1.24.3 matplotlib==3.7.2 psutil==5.9.5 tensorboard==2.11.2
-pip install opencv-python
-pip install gym==0.23.1 nes-py==8.2.1 gym-super-mario-bros==7.4.0
-Training
-bashCopy# Basic training
-python mario_dqn.py --episodes 100
+--------- Features ---------
 
-# Training with 8GB VRAM reservation (adjust for your GPU)
+Tile Grid:
+The game tiles (blocks, items, pipes, etc.) are stored in memory as a 32×13 grid (effectively two 16×13 grids). The displayed screen is a 16×13 portion that scrolls through this grid. Each tile represents a 16×16 pixel area, and the full rendered screen is 256×240 pixels (including areas like score display that aren’t in the RAM grid).
 
-python mario_dqn.py --episodes 100 --reserve-memory 8
+Positions of Mario and Enemies:
+Mario and enemies have their positions stored in pixels. These positions are converted to grid coordinates by dividing by 16 and rounding.
 
-# Resume from checkpoint
+Simplified Representation:
+To keep it simple, each element is given an integer value:
 
-python mario_dqn.py --checkpoint "path/to/checkpoint.pt"
-Using a Trained Agent
-bashCopy# Run agent from the most recent checkpoint
-python run_mario_agent.py
+2: Mario
+1: Non-empty tile
+0: Empty tile
+–1: Enemy
+This works well for World 1-1, though later levels with different enemy types might cause issues.
+Observation Wrapper and Frame Stacking:
+The RAM reading function is wrapped in an ObservationWrapper that also stacks a sequence of recent frames (of shape (13, 16, n_stack)) to provide temporal context.
 
-# Run agent with specific checkpoint
+Why Use the RAM Grid Instead of Pixels?
 
-python run_mario_agent.py --checkpoint "mario_checkpoints/xxx/mario_model_step_xxxx_ep_xx.pt"
-Command Line Arguments
-ArgumentDescriptionDefault--episodesNumber of training episodes500--renderEnable renderingFalse--save-everySave interval (episodes)20--checkpointPath to load checkpoint fromNone--action-typeAction space ('simple', 'right_only', 'custom')'simple'--eval-intervalEvaluation interval (episodes)50--no-ampDisable automatic mixed precisionAMP enabled--reserve-memoryVRAM to reserve (GB)8
-Monitoring Training
-Training metrics are saved to mario_checkpoints/[timestamp]/:
+Efficiency: Processing raw pixel images would require deep convolutional networks, which are computationally expensive—especially.
+Focus on Game Mechanics: Using the RAM grid lets the agent learn the game’s rules and level layout directly, similar to how an experienced player might ignore visual details that are irrelevant for gameplay.
+Reward Function: The default reward is based on how far Mario travels, adjusted by the time taken and penalizing deaths. Changing the reward function would add extra complexity.
 
-Model checkpoints (.pt files)
-TensorBoard logs
-Performance graphs (rewards, distances, etc.)
-
-bashCopy# View training metrics
-tensorboard --logdir mario_checkpoints
-Troubleshooting
-
-GPU Memory Issues: Reduce --reserve-memory to match your GPU capacity (e.g., 4GB)
-Slow Training: Use --render flag to see what's happening or remove it for faster training
-NES Emulator Errors: These usually don't stop training but indicate issues with the emulator
-"Stuck at Obstacles": The agent may struggle at certain barriers (594, 722, 898) - try longer training sessions
-
-Performance Optimization Tips
-
-Batch Size Adjustment: Modify INCREASED_BATCH_SIZE variable for your GPU
-CUDA Memory Management: Clear cache periodically if experiencing memory issues
-Rendering: Disable rendering for 2-3x faster training
-CPU Priority: The script automatically sets process priority to high
-
-## Model Breeding System
-
-The agent incorporates an evolutionary approach to accelerate learning at challenging obstacles:
-
-### How Breeding Works
-
-1. **Success Memory**: When an agent successfully crosses a difficult barrier (e.g., position 594, 722, or 898), its neural network weights are saved to a model library
-
-2. **Model Combination**: Every 20 episodes, the system attempts to breed a new model by combining weights from successful models:
-
-   - Selects parent models that crossed specific barriers
-   - Performs weighted averaging of neural network parameters (50% from the best performer, 30% from second-best, 20% from third-best)
-   - Focuses particularly on the critical barrier at position 898 (the final pipe)
-
-3. **Specialized Training**: Bred models undergo focused training with:
-
-   - Enhanced rewards near barrier 898
-   - Modified exploration rates in challenging areas
-   - Accelerated learning from successful examples
-
-4. **Knowledge Transfer**: If a bred model successfully crosses barrier 898, its weights are adopted by the main agent
-
-5. **Continuous Improvement**: This cycle creates a positive feedback loop where successful strategies are preserved and enhanced
-
-This approach significantly improves learning efficiency by preserving and combining successful strategies across multiple agents, particularly for the most challenging obstacles in the level.
+Training & Results
+Trained a PPO agent with SB3’s MlpPolicy (using two Dense(64) layers) and default hyperparameters, along with a linear learning rate scheduler that decreases the rate to 0 over time. Each model was trained for 10 million steps, taking about 4.5 hours to complete.

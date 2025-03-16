@@ -31,7 +31,9 @@ share/python-wheels/
 *.spec
 
 # Venv
-.venv
+venv
+models/*
 
 # Checkpoints
 mario_checkpoints/*
+Checkpoints/*
