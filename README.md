@@ -1,7 +1,7 @@
 # MARIOML
 
-The pre-trained models are located under `./models`. To run these models use `./ppo-play.ipynb`.
-To train a new model use `./ppo-train.ipynb`.
+The pre-trained models are located under `./models`.
+To train a new model use `./mario_train.ipynb`.
 
 ## Requirements (tested)
 
@@ -16,7 +16,7 @@ To train a new model use `./ppo-train.ipynb`.
 
     pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
 
-This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./mario_utils.py and check out the references in ./ppo-train.ipynb.
+This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./marioUtils.py and check out the references in ./marioTrain.ipynb.
 
 --------- Features ---------
 
