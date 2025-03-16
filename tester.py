@@ -109,7 +109,7 @@ class SMBWithRandomness:
             return action_history
 
 
-def run_mario_ai(model_name='best_model_10000000', random_chance=0.05, delay_between_episodes=1.0):
+def run_mario_ai(model_name='mario-1-1', random_chance=0.05, delay_between_episodes=1.0):
     """
     Run the Mario AI model in a continuous loop until manually stopped
     """
@@ -117,10 +117,10 @@ def run_mario_ai(model_name='best_model_10000000', random_chance=0.05, delay_bet
     n_stack = 4
     n_skip = 4
     render = True
-    deterministic = True
+    deterministic = False
 
     MODEL_DIR = './'
-    version = 'SuperMarioBros-1-1-v1'
+    version = 'SuperMarioBros-1-3-v1'
     episode_count = 0
     total_reward = 0
     total_steps = 0
@@ -196,8 +196,8 @@ if __name__ == "__main__":
     keyboard_thread.daemon = True
     keyboard_thread.start()
 
-    model_name = 'marioV1'
-    random_chance = 0.02
+    model_name = 'mario-1-1'
+    random_chance = 0.05
 
     if len(sys.argv) > 1:
         model_name = sys.argv[1]

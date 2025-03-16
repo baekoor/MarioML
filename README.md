@@ -100,7 +100,7 @@ Evaluation: We periodically evaluate the model's performance using deterministic
 
 Deployment and Testing
 Our MarioUtils class (renamed from SMB in the second file) provides a convenient way to deploy and visualize the trained agent:
-marioUtils = load_and_play_mario(model_name='marioV1', episodes=1)
+marioUtils = load_and_play_mario(model_name='mario-1-1', episodes=1)
 This handles model loading, renders the game visually, and returns performance metrics.
 Importance of Each Component
 

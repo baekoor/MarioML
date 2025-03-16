@@ -203,7 +203,7 @@ class MarioUtils:
 
 # === Main Program Function ===
 
-def load_and_play_mario(model_name='pre-trained-1', episodes=1):
+def load_and_play_mario(model_name='mario-1-1', episodes=1):
     """
     Load and play a pre-trained Mario model
     """
@@ -214,7 +214,7 @@ def load_and_play_mario(model_name='pre-trained-1', episodes=1):
 
     # Load the environment
     print("Loading environment...")
-    env_wrap = load_env('SuperMarioBros-1-1-v1', crop_dim, n_stack, n_skip)
+    env_wrap = load_env('SuperMarioBros-2-1-v1', crop_dim, n_stack, n_skip)
 
     # Create a custom model using direct policy loading
     print(f"Loading model {model_name}...")
