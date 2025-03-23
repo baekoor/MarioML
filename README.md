@@ -5,15 +5,13 @@ To run, use `./tester.py`.
 
 ## Requirements (tested)
 
-    | Module               | Version |
-    | -------------------- | ------- |
-    | gym                  | 0.21.0  |
-    | gym-super-mario-bros | 7.3.0   |
-    | nes-py               | 8.2.1   |
-    | pyglet               | 1.5.21  |
-    | stable-baselines3    | 1.5.0   |
-    | torch                | 1.11.1  |
-
+    Module                Version 
+    gym                   0.21.0  
+    gym-super-mario-bros  7.3.0   
+    nes-py                8.2.1   
+    pyglet                1.5.21  
+    stable-baselines3     1.5.0   
+    torch                 1.11.1  
     pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
 
 This project uses the gym-super-mario-bros environment with a custom observation method that reads directly from the game’s RAM. You can find the code in ./marioUtils.py and check out the references in ./mario_train.ipynb.
