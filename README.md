@@ -3,7 +3,7 @@
 To train a new model use `./mario_train.ipynb`.
 To run, use `./tester.py`.
 
-## Requirements (tested)
+## Requirements
 
     Module                Version 
     gym                   0.21.0  
