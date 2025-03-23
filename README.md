@@ -42,7 +42,7 @@ Focus on Game Mechanics: Using the RAM grid lets the agent learn the game’s ru
 Reward Function: The default reward is based on how far Mario travels, adjusted by the time taken and penalizing deaths. Changing the reward function would add extra complexity.
 
 Training & Results
-Trained a PPO agent with SB3’s MlpPolicy (using two Dense(64) layers) and default hyperparameters, along with a linear learning rate scheduler that decreases the rate to 0 over time. Each model was trained for 10 million steps, taking about 4.5 hours to complete.
+Trained a PPO agent with SB3’s MlpPolicy (using two Dense(64) Neural layers) and default hyperparameters, along with a linear learning rate scheduler that decreases the rate to 0 over time. Each model was trained for 10 million steps, taking about 4.5 hours to complete.
 
 #### INFORMATION BELOW REGARDING TRAINING, OBSERVATION, TESTING AND DEPLOYMENT
 
@@ -97,7 +97,7 @@ Action Space: We're using the SIMPLE_MOVEMENT action space which gives the agent
 Evaluation: We periodically evaluate the model's performance using deterministic actions (no exploration).
 
 Deployment and Testing
-Our MarioUtils class (renamed from SMB in the second file) provides a convenient way to deploy and visualize the trained agent:
+Our MarioUtils class provides a convenient way to deploy and visualize the trained agent:
 marioUtils = load_and_play_mario(model_name='mario-1-1', episodes=1)
 This handles model loading, renders the game visually, and returns performance metrics.
 Importance of Each Component
